@@ -1,0 +1,17 @@
+{
+  "_embedded" : {
+    "users" : [ {
+      "name" : "Bryan",
+      "age" : 20,
+      "_links" : {
+        "self" : {
+          "href" : "http://localhost:8080/users/1"
+        },
+        "User" : {
+          "href" : "http://localhost:8080/users/1"
+        }
+      }
+    }
+    ]
+  }
+}
