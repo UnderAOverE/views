@@ -5,12 +5,16 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1">
 		<title>Educations Quiz</title>
 		<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css">
+		<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css">
+<!-- Material Design Bootstrap -->
+<link href="https://cdnjs.cloudflare.com/ajax/libs/mdbootstrap/4.5.0/css/mdb.min.css" rel="stylesheet">
 		<link rel="stylesheet" href="css/style.css">
 	</head>
 	<body>
 		<div class="container">
 			<div class="page-header">
-				<h2>Education Quiz</h2>
+				<h2 style="text-align:center;">Education Quiz</h2>
+				<button type="button" class="btn btn-warning">Time Remaining: <span id="timer"></span></button>
 			</div>
 			<div ng-controller="listCtrl as list">
 				<div class="row" ng-repeat="t in list.data">
@@ -31,13 +35,13 @@
 					-->
 					<form>
 						<div class="form-group">
-							<label for="selection">Mutiple select list (hold shift to select more than one):</label>
+							<label for="selection">Mutiple selection (hold shift to select more than one)</label>
 							<select multiple class="form-control" id="selection">
 								<option>{{t.answer1}}</option>
 								<option>{{t.answer2}}</option>
 								<option>{{t.answer3}}</option>
 								<option>{{t.answer4}}</option>
-								<option>{{t.answer5}}</option>
+
 							</select>
 						</div>
 					</form>
@@ -48,11 +52,24 @@
 			</button>
 			<br></br><br></br>
 		</div>
+		<footer>
+			<div class="footer-copyright text-center text-black-50 py-3"> Education Quiz 2018</a>
+			</div>
+		</footer>
 
 		<!-- Third party JS -->
+		<!-- JQuery -->
+		<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
+		<!-- Bootstrap tooltips -->
+		<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.13.0/umd/popper.min.js"></script>
+		<!-- Bootstrap core JavaScript -->
+		<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.0.0/js/bootstrap.min.js"></script>
+		<!-- MDB core JavaScript -->
+		<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mdbootstrap/4.5.0/js/mdb.min.js"></script>
 		<script src="https://ajax.googleapis.com/ajax/libs/angularjs/1.5.0-rc.2/angular.min.js"></script>
 
 		<!-- Application scripts -->
+		<script src="js/util/timer.js"></script>
 		<script src="js/app.js"></script>
 		<script src="js/controllers/list-http.js"></script>
 
