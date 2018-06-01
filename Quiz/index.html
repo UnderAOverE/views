@@ -5,9 +5,6 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1">
 		<title>Educations Quiz</title>
 		<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css">
-		<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css">
-<!-- Material Design Bootstrap -->
-<link href="https://cdnjs.cloudflare.com/ajax/libs/mdbootstrap/4.5.0/css/mdb.min.css" rel="stylesheet">
 		<link rel="stylesheet" href="css/style.css">
 	</head>
 	<body>
@@ -19,32 +16,48 @@
 			<div ng-controller="listCtrl as list">
 				<div class="row" ng-repeat="t in list.data">
 					<h4>Q. {{t.question}}</h4>
-					<!--
-					<div class="checkbox">
-						<label><input type="checkbox" value="">{{t.answer1}}</label>
+					<div ng-show="!t.option3.length">
+						<div class="radio" ng-show="t.option1.length">
+							<label><input type="radio" name="optradio">{{t.option1}}</label>
+						</div>
+						<div class="radio" ng-show="t.option2.length">
+							<label><input type="radio" name="optradio">{{t.option2}}</label>
+						</div>
 					</div>
-					<div class="checkbox">
-						<label><input type="checkbox" value="">{{t.answer2}}</label>
+					<div ng-show="t.option3.length">
+						<div class="checkbox" ng-show="t.option1.length">
+							<label><input type="checkbox" value="">{{t.option1}}</label>
+						</div>
+						<div class="checkbox" ng-show="t.option2.length">
+							<label><input type="checkbox" value="">{{t.option2}}</label>
+						</div>
+						<div class="checkbox " ng-show="t.option3.length">
+							<label><input type="checkbox" value="">{{t.option3}}</label>
+						</div>
+						<div class="checkbox " ng-show="t.option4.length">
+							<label><input type="checkbox" value="">{{t.option4}}</label>
+						</div>
+						<div class="checkbox " ng-show="t.option5.length">
+							<label><input type="checkbox" value="">{{t.option5}}</label>
+						</div>
+						<div class="checkbox " ng-show="t.option6.length">
+							<label><input type="checkbox" value="">{{t.option6}}</label>
+						</div>
 					</div>
-					<div class="checkbox ">
-						<label><input type="checkbox" value="">{{t.answer3}}</label>
-					</div>
-					<div class="checkbox ">
-						<label><input type="checkbox" value="">{{t.answer4}}</label>
-					</div>
-					-->
+					<h5> Answer: {{t.answer}}</h5>
+					<!--					
 					<form>
 						<div class="form-group">
 							<label for="selection">Mutiple selection (hold shift to select more than one)</label>
 							<select multiple class="form-control" id="selection">
-								<option>{{t.answer1}}</option>
-								<option>{{t.answer2}}</option>
-								<option>{{t.answer3}}</option>
-								<option>{{t.answer4}}</option>
-
+								<option>{{t.option1}}</option>
+								<option>{{t.option2}}</option>
+								<option>{{t.option3}}</option>
+								<option>{{t.option4}}</option>
 							</select>
 						</div>
 					</form>
+					-->
 				</div>
 			</div>
 			<button class="btn btn-info pull-right">
@@ -58,14 +71,6 @@
 		</footer>
 
 		<!-- Third party JS -->
-		<!-- JQuery -->
-		<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.2.1/jquery.min.js"></script>
-		<!-- Bootstrap tooltips -->
-		<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.13.0/umd/popper.min.js"></script>
-		<!-- Bootstrap core JavaScript -->
-		<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.0.0/js/bootstrap.min.js"></script>
-		<!-- MDB core JavaScript -->
-		<script type="text/javascript" src="https://cdnjs.cloudflare.com/ajax/libs/mdbootstrap/4.5.0/js/mdb.min.js"></script>
 		<script src="https://ajax.googleapis.com/ajax/libs/angularjs/1.5.0-rc.2/angular.min.js"></script>
 
 		<!-- Application scripts -->
