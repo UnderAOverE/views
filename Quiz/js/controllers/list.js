@@ -2,13 +2,13 @@
     angular
         .module("educationQuiz")
         .controller("listCtrl", ListController);
-		
+
 		function ListController() {
 			var vm = this;
 			vm.data = tableData;
 		}
-		
-		var tableData = [		
+
+		var tableData = [
 			{
 				question: "What is your current location?",
 				answer1: "Las Vegas",
@@ -29,7 +29,7 @@
 				answer2: "Evening",
 				answer3: "Afternoon",
 				answer4: "Midnight"
-			}		
+			}
 		];
-		
+
 })();
