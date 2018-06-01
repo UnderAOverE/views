@@ -14,7 +14,8 @@
 			</div>
 			<div ng-controller="listCtrl as list">
 				<div class="row" ng-repeat="t in list.data">
-					<h4>{{t.question}}</h4>
+					<h4>Q. {{t.question}}</h4>
+					<!--
 					<div class="checkbox">
 						<label><input type="checkbox" value="">{{t.answer1}}</label>
 					</div>
@@ -27,7 +28,19 @@
 					<div class="checkbox ">
 						<label><input type="checkbox" value="">{{t.answer4}}</label>
 					</div>
-				</div>
+					-->
+					<form>
+						<div class="form-group">
+							<label for="sel2">Mutiple select list (hold shift to select more than one):</label>
+							<select multiple class="form-control" id="sel2">
+								<option>{{t.answer1}}</option>
+								<option>{{t.answer2}}</option>
+								<option>{{t.answer3}}</option>
+								<option>{{t.answer4}}</option>								
+							</select>
+						</div>
+					</form>
+				</div>					
 			</div>
 		</div>
 	
@@ -38,7 +51,7 @@
 		
 		<!-- Application scripts -->
 		<script src="js/app.js"></script>
-		<script src="js/controllers/list.js"></script>
+		<script src="js/controllers/list-http.js"></script>
 		
 	</body>
 </html>
