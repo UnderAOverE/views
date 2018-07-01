@@ -6,7 +6,7 @@ app.controller('UserCRUDCtrl', ['$scope','UserCRUDService', function ($scope,Use
         UserCRUDService.updateUser($scope.user.id,$scope.user.name,$scope.user.email)
           .then(function success(response){
               $scope.message = 'User data updated!';
-              $scope.errorMessage = '';
+              $scope.errorMessage = "";
           },
           function error(response){
               $scope.errorMessage = 'Error updating user!';
