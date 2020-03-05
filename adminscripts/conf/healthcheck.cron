@@ -1,0 +1,1 @@
+*/15 * * * * /home/sreddy/adminscripts/bin/health_check.sh 1>/home/sreddy/adminscripts/logs/cron.out 2>/home/sreddy/adminscripts/logs/cron.err

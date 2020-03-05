@@ -1,0 +1,11 @@
+Express:
+
+  Development:
+    - Master:txjbsd05.ttiinc.com+devmaster+/apps/jboss-eap-7.2/domain/configuration/host-master.xml
+    - Port:9999
+    - Slaves:txjbsd05.ttiinc.com+devnode1+/apps/jboss-eap-7.2/domain/configuration/host-slave.xml,txjbsd06.ttiinc.com+devnode2+/apps/jboss-eap-7.2/domain/configuration/host-slave.xml
+    - Group:ExpressDev
+
+  Production:
+
+  QA:

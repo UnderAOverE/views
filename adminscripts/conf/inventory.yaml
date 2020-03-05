@@ -1,0 +1,113 @@
+# Inventory file for 'Application Health Check' program, broken down by application and environment.
+# Format= server-name:instance-port:instance-name:snooze-alert (0=disabled & 1=enabled)
+
+CustomerAccountManagement:
+
+  Development:
+    - txjbst01.ttiinc.com:8180:txjbst01_S01:0
+
+  Production:
+    - txjbsp01.ttiinc.com:8180:txjbsp01_S01:0
+    - txjbsp02.ttiinc.com:8180:txjbsp01_S01:0
+
+  QA:
+    - txjbsq01.ttiinc.com:8180:txjbsq01_S01:0
+    - txjbsq02.ttiinc.com:8180:txjbsq02_S01:0
+
+HATS:
+
+  Development:
+    - txhtwd01.ttiinc.com:9080:tti_hats:0
+
+  Production:
+    - txhtwp01.ttiinc.com:9080:tti_hats:0
+    - txhtwp02.ttiinc.com:9080:tti_hats:0
+
+  QA:
+    - txhtwq01.ttiinc.com:9080:tti_hats:0
+    - txhtwq02.ttiinc.com:9080:tti_hats:0
+
+QuoteDashboard:
+
+  Development:
+    - txjbst01.ttiinc.com:8280:txjbst01_S02:0
+
+  Production:
+    - txjbsp01.ttiinc.com:8280:txjbsp01_S02:0
+    - txjbsp02.ttiinc.com:8280:txjbsp02_S02:0
+
+  QA:
+    - txjbsq01.ttiinc.com:8280:txjbsq01_S02:0
+    - txjbsq02.ttiinc.com:8280:txjbsq02_S02:0
+
+SupplyChain:
+
+  Development:
+    - txjbst01.ttiinc.com:8380:txjbst01:0
+
+  Production:
+    - txjbsp01.ttiinc.com:8380:txjbsp01_S03:0
+
+  QA:
+    - txjbsq01.ttiinc.com:8380:txjbsq01_S03:0
+
+OppurtunityManagementSystem:
+
+  Development:
+    - txjbst01.ttiinc.com:8480:txjbst01:0
+
+  Production:
+    - txjbsp01.ttiinc.com:8480:txjbsp01_S04:0
+    - txjbsp02.ttiinc.com:8480:txjbsp02_S04:0
+
+  QA:
+    - txjbsq01.ttiinc.com:8480:txjbsq01_S04:0
+    - txjbsq02.ttiinc.com:8480:txjbsq02_S04:0
+
+Express:
+
+  Development:
+    - txwast11.ttiinc.com:9443:server1:0
+
+  K_VSAM:
+    - txwast11.ttiinc.com:10026:tti_WLM_kserver1:1
+    - txwast11.ttiinc.com:10046:tti_WLM_kserver2:1
+
+  J_DB2:
+    - txwast11.ttiinc.com:20026:tti_WLM_jserver1:1
+    - txwast11.ttiinc.com:20046:tti_WLM_jserver2:1
+
+  Production:
+    - txwasp11.ttiinc.com:9443:tti_WLM_server1:0
+    - txwasp11.ttiinc.com:9444:tti_WLM_server2:0
+    - txwasp12.ttiinc.com:9443:tti_WLM_server3:0
+    - txwasp12.ttiinc.com:9444:tti_WLM_server4:0
+
+  QA:
+    - txwasq11.ttiinc.com:9443:tti_WLM_server1:0
+    - txwasq11.ttiinc.com:9444:tti_WLM_server2:0
+    - txwasq12.ttiinc.com:9443:tti_WLM_server3:0
+    - txwasq12.ttiinc.com:9444:tti_WLM_server4:0
+
+ExpressEAP:
+
+  Development:
+    - txjbsd05.ttiinc.com:8230:txjbsd05_s01:0
+    - txjbsd06.ttiinc.com:8230:txjbsd06_s01:0
+
+  Production:
+
+  QA:
+
+PaymentProcessing:
+
+  Development:
+    - txjbsd04.ttiinc.com:8080:Standalone:0
+
+  Production:
+    - txjbsp04.ttiinc.com:8080:Standalone:1
+    - txjbsp05.ttiinc.com:8080:Standalone:1
+
+  QA:
+    - txjbsq04.ttiinc.com:8080:Standalone:0
+    - txjbsq05.ttiinc.com:8080:Standalone:1
