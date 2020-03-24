@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+        <!-- ======================================================================================================== -->
+		<meta charset="UTF-8">
+        <meta http-equiv="X-UA-Compatible" content="IE=edge">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+        <!-- The above 3 meta tags *must* come first in the head; any other head content must come *after* these tags -->
+		<meta name="description" content="EE & SS JIRA Zephyr POC">
+		<meta name="author" content="Shane Reddy">
+		<link rel="icon" href="images/citi.ico">
+		<title>JIRA Zephyr POC</title>
+        <script type = "text/javascript">
+			if((navigator.vendor.length > 5) && (navigator.vendor.toLowerCase().indexOf("google inc") > -1)) {
+				console.log("Chrome detected.");
+			} else {
+				window.location.href = "berror.html"; // all other browsers
+			}
+		</script>
+        <!-- Bootstrap Core CSS -->
+        <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css">
+		<link rel="stylesheet" href="css/bootstrap.min.css">
+        <!-- Custom CSS -->
+        <link rel="stylesheet" href="css/custom.css">
+        <!-- ======================================================================================================== -->
+	</head>
+	<body>
+        <nav class="navbar navbar-default bg-primary navbar-fixed-top">
+			<div class="container-fluid">
+				<a id=logo class="navbar-brand" href="#"></a>
+				<h4>Engineering Excellence & Safety and Soundness</h4>
+			</div>
+		</nav>
+        <br>
+        <div class="page-wrap">
+            <h3>JIRA Projects Details</h3>
+            <div id="project-container"></div>
+        </div>
+        <script id="jiraTemplate" type="text/x-handlebars-template">
+            <table class="table table-bordered table-hover">
+                <thead class="thead-light">
+                    <th scope="col">#</th>
+                    <th scope="col">Project Name</th>
+                    <th scope="col">Key</th>
+                </thead>
+                <tbody>
+                    {{#each this}}
+                        <tr>
+                            <td>{{@index}}</td>
+                            <td>{{name}}</td>
+                            <td>{{key}}</td>
+                        </tr>
+                    {{/each}}
+                </tbody>
+            </table>
+        </script>
+        <br>
+        <br>
+		<footer>
+			<div class="footer-copyright text-center">
+                <p>Citigroup Incs. 2020 (c)</p>
+			</div>
+		</footer>
+        
+		<!-- Third party Javascript Libraries/ Framework-->
+        <script src="js/jquery-3.1.1.min.js"></script>
+        <script src="js/tether.js"></script>
+        <script src="js/bootstrap.min.js"></script>
+        
+		<script src="js/handlebars.min-v4.7.3.js"></script>
+	
+		<!-- Application Custom Javascripts -->
+		<script src="js/jira.js"></script>
+	</body>
+</html>

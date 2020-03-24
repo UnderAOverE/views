@@ -21,20 +21,6 @@ body {
   padding: 50px 10%;
 }
 
-.navbar-brand {
-  display: flex;
-  justify-content: space-between;
-  margin: auto;
-  margin-bottom: 0px;
-}
-
-#logo {
-    float: left;
-    width: 250px;
-    height: 50px;
-    background: url('../images/whitecitilogo.png') left/contain no-repeat;
-}
-
 button {
   background-color: #046380;
   color: #FFF;
