@@ -1,41 +1,35 @@
-# In test_failover_system.py (or a models file)
+async def _execute_update_one(self, filter_query: MongoDocument, update_doc: MongoDocument, upsert: bool = False,) -> UpdateResult:
+    """
+    Executes an update_one operation on the collection.
 
-import datetime
-from typing import List, Optional, Literal, Generic, TypeVar, Any
-from pydantic import BaseModel, Field
+    :param filter_query: The filter query to find the document to update.
+    :param update_doc: The update document containing the changes to apply.
+    :param upsert: Whether to insert a new document if no document matches the filter.
+    :return: The result of the update operation.
+    """
+    try:
+        return await self._collection.update_one(filter_query, {"$set": update_doc}, upsert=upsert)
+    except Exception as generic_exception:
+        raise Exception(f"Error in _execute_update_one for {self._collection_name}, exception: {repr(generic_exception)}")
 
-# --- Pydantic Models for the Audit Log ---
+# endTryExcept
 
-class CheckResult(BaseModel):
-    """A Pydantic model for a single entry in the 'checks' list."""
-    name: str
-    passed: bool
-    details: str
-    timestamp: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
+# endAsyncDef
 
-class ActionResult(BaseModel):
-    """A Pydantic model for a single entry in the 'actions' list."""
-    application: str
-    new_state: str
-    details: str
-    timestamp: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
+async def _execute_update_many(self, filter_query: MongoDocument, update_doc: MongoDocument, upsert: bool = False,) -> UpdateResult:
+    """
+    Executes an update_many operation on the collection.
 
-class AuditLog(BaseModel):
-    """The Pydantic model for the entire audit log document."""
-    run_id: str
-    user: str = "ai-agent"
-    operation_type: Literal["FAILOVER", "ROLLBACK"]
-    status: str = "IN_PROGRESS"
-    start_time: datetime.datetime = Field(default_factory=datetime.datetime.utcnow)
-    end_time: Optional[datetime.datetime] = None
-    
-    # Using the sub-models for type safety
-    checks: List[CheckResult] = []
-    actions: List[ActionResult] = []
+    :param filter_query: The filter query to find the documents to update.
+    :param update_doc: The update document containing the changes to apply.
+    :param upsert: Whether to insert new documents if no documents match the filter.
+    :return: The result of the update operation.
+    """
+    try:
+        return await self._collection.update_many(filter_query, {"$set": update_doc}, upsert=upsert)
+    except Exception as generic_exception:
+        raise Exception(f"Error in _execute_update_many for {self._collection_name}, exception: {repr(generic_exception)}")
 
-    # The summary is a snapshot and can be represented as a generic dict
-    summary: Optional[dict] = None
+# endTryExcept
 
-# --- Generic Type Definitions for the Base Repository ---
-# This defines a generic type 'T' that must be a subclass of Pydantic's BaseModel
-T = TypeVar("T", bound=BaseModel)
+# endAsyncDef
