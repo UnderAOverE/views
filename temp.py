@@ -1,35 +1,55 @@
-async def _execute_update_one(self, filter_query: MongoDocument, update_doc: MongoDocument, upsert: bool = False,) -> UpdateResult:
-    """
-    Executes an update_one operation on the collection.
+def generate_html_table(title: str, details: dict[str, str]) -> str:
+    if not details:
+        return f'<h2>{title}</h2><p>No details provided.</p>'
 
-    :param filter_query: The filter query to find the document to update.
-    :param update_doc: The update document containing the changes to apply.
-    :param upsert: Whether to insert a new document if no document matches the filter.
-    :return: The result of the update operation.
-    """
-    try:
-        return await self._collection.update_one(filter_query, {"$set": update_doc}, upsert=upsert)
-    except Exception as generic_exception:
-        raise Exception(f"Error in _execute_update_one for {self._collection_name}, exception: {repr(generic_exception)}")
+    log_datetime = datetime.now(timezone.utc).strftime('%m-%d-%y %H:%M:%S %Z')
+    table_rows = ''
+    for key, value in details.items():
+        escaped_value = html_escape_string_recursive(value)
+        table_rows += f'<tr><td style="padding: 8px; border: 1px solid #ddd; text-align: left; font-weight: bold;">{key}</td><td style="padding: 8px; border: 1px solid #ddd; text-align: left;">{escaped_value}</td></tr>'
 
-# endTryExcept
-
-# endAsyncDef
-
-async def _execute_update_many(self, filter_query: MongoDocument, update_doc: MongoDocument, upsert: bool = False,) -> UpdateResult:
-    """
-    Executes an update_many operation on the collection.
-
-    :param filter_query: The filter query to find the documents to update.
-    :param update_doc: The update document containing the changes to apply.
-    :param upsert: Whether to insert new documents if no documents match the filter.
-    :return: The result of the update operation.
-    """
-    try:
-        return await self._collection.update_many(filter_query, {"$set": update_doc}, upsert=upsert)
-    except Exception as generic_exception:
-        raise Exception(f"Error in _execute_update_many for {self._collection_name}, exception: {repr(generic_exception)}")
-
-# endTryExcept
-
-# endAsyncDef
+    html_content = f'''
+    <html>
+    <head>
+    <style>
+        body {{font-family: Arial, sans-serif; margin: 20px;}}
+        h2 {{color: #333;}}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+            box-shadow: 0 2px 3px rgba(0,0,0,0.1);
+        }}
+        th, td {{
+            padding: 12px;
+            border: 1px solid #ddd;
+            text-align: left;
+        }}
+        th {{
+            background-color: #2BBCE3;
+            color: #333;
+        }}
+        tr:nth-child(even) {{background-color: #2BBCE3;}}
+        tr:hover {{background-color: #f1f1f1;}}
+    </style>
+    </head>
+    <body>
+        <h2>{title}</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 30%;">Stage</th>
+                    <th>Result</th>
+                </tr>
+            </thead>
+            <tbody>
+                {table_rows}
+            </tbody>
+        </table>
+        <p style="font-size: 0.9em; color: #777; margin-top: 20px;">
+            This is an automated email from (APPLICATION_NAME_STR) generated on {log_datetime}.
+        </p>
+    </body>
+    </html>
+    '''
+    return html_content
