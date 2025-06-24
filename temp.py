@@ -1,187 +1,140 @@
-# test_user_database.py
-# This file contains the unit tests for our UserDatabase class.
+# Pytest and Test Coverage Example: Shopping Cart
 
-import unittest
-import mongomock  # The star of the show!
-from user_database import UserDatabase
+This project provides a complete, practical example of testing a Python class using `pytest` and measuring the test coverage with the `pytest-cov` plugin.
 
-class TestUserDatabase(unittest.TestCase):
-    """Test cases for the UserDatabase class."""
+## Core Concepts Demonstrated
 
-    def setUp(self):
-        """
-        Set up a fresh, in-memory database for each test.
-        This method runs before each test function.
-        """
-        # 1. Create a mock MongoDB client using mongomock.
-        self.mock_client = mongomock.MongoClient()
-
-        # 2. "Inject" this mock client into the class we are testing.
-        # Our UserDatabase class will think it's talking to a real MongoDB
-        # server, but it's actually talking to our in-memory mock.
-        self.db = UserDatabase(mongo_client=self.mock_client)
-        print("\n--- setUp: Created a fresh in-memory database ---")
-
-
-    def tearDown(self):
-        """
-        Clean up after each test.
-        """
-        # 3. Explicitly drop the database to ensure a clean state,
-        # although with a new mongomock client per test, this is just for good measure.
-        self.mock_client.drop_database('my_app_db')
-        print("--- tearDown: Dropped the in-memory database ---")
-
-
-    def test_add_and_get_user(self):
-        """
-        Test adding a user and then retrieving them to verify correctness.
-        """
-        print("Executing: test_add_and_get_user")
-        
-        # Add a user
-        user_id = self.db.add_user(1, "Alice", "alice@example.com")
-        self.assertEqual(user_id, 1)
-
-        # Retrieve the user
-        user = self.db.get_user(1)
-
-        # Assert that the retrieved user is not None and has the correct data
-        self.assertIsNotNone(user)
-        self.assertEqual(user['name'], "Alice")
-        self.assertEqual(user['email'], "alice@example.com")
-
-
-    def test_get_nonexistent_user(self):
-        """
-        Test that getting a user who doesn't exist returns None.
-        """
-        print("Executing: test_get_nonexistent_user")
-        user = self.db.get_user(999) # This user ID does not exist
-        self.assertIsNone(user)
-
-
-    def test_update_user_email(self):
-        """
-        Test updating a user's email.
-        """
-        print("Executing: test_update_user_email")
-
-        # First, add a user to have something to update
-        self.db.add_user(2, "Bob", "bob@example.com")
-        
-        # Now, update the email
-        updated = self.db.update_user_email(2, "bobby.new@example.com")
-        self.assertTrue(updated)
-
-        # Verify the update by retrieving the user again
-        updated_user = self.db.get_user(2)
-        self.assertEqual(updated_user['email'], "bobby.new@example.com")
-
-
-    def test_add_existing_user(self):
-        """
-        Test that adding a user with a pre-existing ID fails gracefully.
-        Our current implementation should return None.
-        """
-        print("Executing: test_add_existing_user")
-        # Add a user with ID 3
-        self.db.add_user(3, "Charlie", "charlie@example.com")
-        
-        # Try to add the same user again
-        result = self.db.add_user(3, "Charlie Clone", "clone@example.com")
-        
-        # Assert that the second add operation failed as expected
-        self.assertIsNone(result)
-
-# This allows the test to be run from the command line
-if __name__ == '__main__':
-    unittest.main(verbosity=2)
-
-# user_database.py
-# This is our application code that we want to test.
-# It interacts with a MongoDB database.
-
-class UserDatabase:
-    """A class to manage users in a MongoDB collection."""
-
-    def __init__(self, mongo_client):
-        """
-        Initializes the UserDatabase with a MongoDB client.
-
-        This is an example of 'Dependency Injection'. We don't create the
-        client inside this class; we pass it in. This allows us to pass
-        a real client in production and a mock client during tests.
-        """
-        self.db = mongo_client.my_app_db
-        self.users = self.db.users
-
-    def add_user(self, user_id, name, email):
-        """Adds a new user to the database."""
-        # Check if user already exists
-        if self.users.find_one({"_id": user_id}):
-            return None # Or raise an error, depending on desired behavior
-        
-        user_data = {
-            "_id": user_id,
-            "name": name,
-            "email": email
-        }
-        result = self.users.insert_one(user_data)
-        return result.inserted_id
-
-    def get_user(self, user_id):
-        """Finds a user by their ID."""
-        return self.users.find_one({"_id": user_id})
-
-    def update_user_email(self, user_id, new_email):
-        """Updates the email for a given user."""
-        result = self.users.update_one(
-            {"_id": user_id},
-            {"$set": {"email": new_email}}
-        )
-        return result.modified_count > 0
-
-
-# Python Unittest Examples with PyMongo
-
-This project demonstrates how to effectively test Python code that interacts with a MongoDB database using `pymongo`.
-
-## The Challenge of Testing Database Code
-
-When testing code that talks to a database, we want to avoid:
-1.  **Dependency:** Requiring a real MongoDB server to be running just to run tests.
-2.  **Slowness:** Network and disk I/O to a real database makes tests slow.
-3.  **State Pollution:** Tests should be independent. If one test adds data to the database, it shouldn't affect the next test.
-
-## The Solution: Mocking with `mongomock`
-
-We solve these problems by using the `mongomock` library.
-
-*   `mongomock` creates an **in-memory simulation** of a MongoDB database.
-*   It has the same interface as `pymongo`, so our application code doesn't need to change.
-*   It's extremely fast and requires no installation of MongoDB.
-*   Each test can get its own fresh, empty, and isolated database, ensuring tests don't interfere with each other.
+1.  **Pytest Fixtures**: Instead of `setUp/tearDown`, we use a `@pytest.fixture` to provide a clean, fresh `ShoppingCart` instance to each test that needs one. This is the modern, preferred way to handle test setup.
+2.  **Pytest Assertions**: We use Python's simple, built-in `assert` statement. `pytest` provides detailed output on failures automatically.
+3.  **Testing for Exceptions**: We use `pytest.raises` to verify that our code correctly raises errors under specific conditions (e.g., trying to add an item with a negative price).
+4.  **Test Coverage**: We use the `pytest-cov` plugin to measure exactly which lines of our application code are executed by our tests. The goal is to identify untested parts of our application.
 
 ## Project Files
 
-*   **`user_database.py`**: A simple class that manages a `users` collection in a database. It's written to accept a `pymongo` client, a pattern known as **Dependency Injection**, which is crucial for testability.
-*   **`test_user_database.py`**: The unit test suite. In the `setUp` method, instead of creating a real `pymongo.MongoClient`, we create a `mongomock.MongoClient` and pass it to our `UserDatabase` class.
+*   **`shopping_cart.py`**: The class we want to test. It contains logic for adding, removing, and calculating totals, including some error-checking.
+*   **`test_shopping_cart_pytest.py`**: The test suite. It contains enough tests to exercise every line of code in `shopping_cart.py`, leading to 100% test coverage.
 
-## How to Run
+## How to Run This Example
 
-1.  **Install dependencies:**
-    ```bash
-    pip install pymongo mongomock
-    ```
+### Step 1: Install Dependencies
 
-2.  **Run the tests:**
-    You can run the tests using Python's built-in `unittest` runner.
-    ```bash
-    python -m unittest test_user_database.py
-    ```
+You need `pytest` and `pytest-cov`. Install them using pip.
 
-    Or by running the file directly:
-    ```bash
-    python test_user_database.py
-    ```
+```bash
+pip install pytest pytest-cov
+
+pytest -v
+
+pytest --cov=shopping_cart --cov-report term-missing
+
+pytest --cov=shopping_cart --cov-report=html
+
+
+-------------------------
+**shopping_cart.py**
+-------------------------
+```python
+# shopping_cart.py
+# The application class we want to test.
+
+class ShoppingCart:
+    """A simple shopping cart class."""
+    def __init__(self):
+        # Items will be stored as { 'item_name': {'price': price, 'quantity': quantity} }
+        self.items = {}
+
+    def add_item(self, item_name, price, quantity=1):
+        """Adds an item to the cart or updates its quantity."""
+        # This is a branch we need to test
+        if not isinstance(price, (int, float)) or price < 0:
+            raise ValueError("Price must be a non-negative number.")
+
+        # This is a branch we need to test (item already exists)
+        if item_name in self.items:
+            self.items[item_name]['quantity'] += quantity
+        # This is another branch (new item)
+        else:
+            self.items[item_name] = {'price': price, 'quantity': quantity}
+
+    def remove_item(self, item_name, quantity=1):
+        """Removes a specified quantity of an item from the cart."""
+        # This branch checks if the item is in the cart
+        if item_name not in self.items:
+            raise ValueError(f"{item_name} not in cart.")
+
+        # This branch handles removing all or more items
+        if self.items[item_name]['quantity'] <= quantity:
+            del self.items[item_name]
+        # This branch handles partial removal
+        else:
+            self.items[item_name]['quantity'] -= quantity
+
+    def get_total(self):
+        """Calculates the total price of all items in the cart."""
+        total = 0
+        for item in self.items.values():
+            total += item['price'] * item['quantity']
+        return total
+
+# test_shopping_cart_pytest.py
+# The test suite using pytest.
+
+import pytest
+from shopping_cart import ShoppingCart
+
+# A pytest fixture to create a fresh cart instance for each test
+@pytest.fixture
+def cart():
+    """Creates an empty ShoppingCart instance."""
+    return ShoppingCart()
+
+def test_initial_cart_is_empty(cart):
+    """Test that a new cart is empty."""
+    assert len(cart.items) == 0
+    assert cart.get_total() == 0
+
+def test_add_new_item(cart):
+    """Test adding a completely new item."""
+    cart.add_item("Apple", 0.5, 2)
+    assert "Apple" in cart.items
+    assert cart.items["Apple"]["price"] == 0.5
+    assert cart.items["Apple"]["quantity"] == 2
+    assert cart.get_total() == 1.0
+
+def test_add_existing_item(cart):
+    """Test adding more of an item that is already in the cart."""
+    cart.add_item("Banana", 0.75, 1) # Add one banana
+    cart.add_item("Banana", 0.75, 2) # Add two more bananas
+    assert cart.items["Banana"]["quantity"] == 3
+    assert cart.get_total() == 2.25
+
+def test_remove_partial_quantity(cart):
+    """Test removing some, but not all, of an item."""
+    cart.add_item("Orange", 1.0, 5)
+    cart.remove_item("Orange", 3)
+    assert cart.items["Orange"]["quantity"] == 2
+    assert cart.get_total() == 2.0
+
+def test_remove_all_of_an_item(cart):
+    """Test removing all of a specific item."""
+    cart.add_item("Milk", 3.0, 1)
+    cart.add_item("Bread", 2.5, 2)
+    cart.remove_item("Milk", 1) # Remove the only milk
+    assert "Milk" not in cart.items
+    assert cart.get_total() == 5.0 # Bread total remains
+
+# --- Tests for Error Conditions (Crucial for 100% Coverage) ---
+
+def test_add_item_with_negative_price_raises_error(cart):
+    """Test that adding an item with a negative price raises a ValueError."""
+    # pytest.raises is a context manager that checks for expected exceptions.
+    # The test passes only if a ValueError is raised inside the 'with' block.
+    with pytest.raises(ValueError, match="Price must be a non-negative number."):
+        cart.add_item("Bad Item", -1.0)
+
+def test_remove_nonexistent_item_raises_error(cart):
+    """Test that removing an item not in the cart raises a ValueError."""
+    # We add an item just to make sure the cart isn't empty
+    cart.add_item("Apple", 0.5)
+    with pytest.raises(ValueError, match="Banana not in cart."):
+        cart.remove_item("Banana") # "Banana" was never added
