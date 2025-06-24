@@ -1,17 +1,42 @@
-    # Call the getsafemodes API to get the latest safemode status for the application and set the run_status for application.
-    getsafemodes_return, getsafemodes = await run_status.safemode_api_service.get_safemodes()
+for application in [ApplicationConstants.CBOL, ApplicationConstants.MOB]:
 
-    if not getsafemodes_return:
-        details: str = f"getsafemodes API call failed with response: {getsafemodes_return}"
-        logger.error(details)
-        await run_status.run_logs_service.update_check(handler_name, False, details=details)
-        run_status.is_stopped = True
+    # Validate if the current application status and requested operation is valid.
+    match application:
 
-        log_datetime: str = datetime.now(timezone.utc).strftime("%m %d %Y %H:%M:%S %Z")
-        exception_details = {
-            "run_id": run_status.run_id,
-            "error": f"getsafemodes API call failed with response: {getsafemodes_return}",
-        }
-        run_status.notification_service.send_email_to_developers(table_details=exception_details, table_title=f"Error Details ({log_datetime})")
+        case ApplicationConstants.CBOL:
+            run_status.cbol_status = STATUS_TRANSITIONS.get((run_status.cbol_status, run_status.operation), None)
+            if run_status.cbol_status is None:
+                details: str = f"getsafemodes[{application.value}] active = {getsafemodes[application.value]}"
+                logger.warning(details)
+                await run_status.run_logs_service.update_check(handler_name, False, details=details)
+            else:
+                # Query backend collection to get the status for the application.
+                backend_status, backend_details = await run_status.backend_service.check_safemodeauditlogs_status(application=application.value)
+                prerequisite_details: str = f"getsafemodes[{application.value}] active = {getsafemodes[application.value]} & {backend_details}"
 
-        return await super().handle(run_status)
+                if backend_status:
+                    logger.info(prerequisite_details)
+                else:
+                    logger.warning(prerequisite_details)
+                    run_status.cbol_status = None
+
+                await run_status.run_logs_service.update_check(handler_name, backend_status, details=prerequisite_details)
+
+        case ApplicationConstants.MOB:
+            run_status.mbol_status = STATUS_TRANSITIONS.get((run_status.mbol_status, run_status.operation), None)
+            if run_status.mbol_status is None:
+                details: str = f"getsafemodes[{application.value}] active = {getsafemodes[application.value]}"
+                logger.warning(details)
+                await run_status.run_logs_service.update_check(handler_name, False, details=details)
+            else:
+                # Query backend collection to get the status for the application.
+                backend_status, backend_details = await run_status.backend_service.check_safemodeauditlogs_status(application=application.value)
+                prerequisite_details: str = f"getsafemodes[{application.value}] active = {getsafemodes[application.value]} & {backend_details}"
+
+                if backend_status:
+                    logger.info(prerequisite_details)
+                else:
+                    logger.warning(prerequisite_details)
+                    run_status.mbol_status = None
+
+                await run_status.run_logs_service.update_check(handler_name, backend_status, details=prerequisite_details)
