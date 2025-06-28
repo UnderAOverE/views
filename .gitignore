@@ -1,0 +1,130 @@
+# =============================================================================
+#  Python
+# =============================================================================
+
+# Virtual Environments
+# A good practice is to name your venv "venv" or ".venv"
+venv/
+.venv/
+env/
+.env/
+ENV/
+.ENV/
+*env/
+*.env
+
+# Python cache files and artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+#  Usually these files are created by pyinstaller, if you are freezing your code
+*.spec
+
+
+# =============================================================================
+#  Secrets & Configuration
+# =============================================================================
+
+# DO NOT COMMIT SENSITIVE INFORMATION.
+# Use environment variables or a secrets management tool instead.
+# Files containing credentials, API keys, etc.
+secrets.json
+credentials.json
+config.ini
+*.pem
+*.key
+*.p12
+
+# Environment variables file (often used with python-dotenv)
+.env
+.env.*
+
+
+# =============================================================================
+#  IDE & Editor-specific files
+# =============================================================================
+
+# Visual Studio Code
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# PyCharm
+.idea/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Atom
+.atom/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+
+# =============================================================================
+#  Testing & Coverage Reports
+# =============================================================================
+
+# Pytest
+.pytest_cache/
+.tox/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+*.cover
+
+
+# =============================================================================
+#  Operating System files
+# =============================================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+
+# =============================================================================
+#  Other
+# =============================================================================
+
+# Log files
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
