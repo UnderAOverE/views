@@ -1,0 +1,161 @@
+Of course. Here is a succinct guide to the different kinds of software tests, with a focus on how they apply in a Python context.
+
+1. Unit Test
+
+What is it? Tests the smallest piece of code possible in isolation—usually a single function or method. External dependencies (like databases, APIs, or other classes) are "mocked" or faked.
+
+Goal: Verify that the function's logic is correct on its own.
+
+Python Example (pytest): Testing a simple utility function.
+
+Generated python
+# a_simple_tool.py
+def add_positive_numbers(a, b):
+    if a <= 0 or b <= 0:
+        raise ValueError("Inputs must be positive")
+    return a + b
+
+# test_a_simple_tool.py
+import pytest
+from a_simple_tool import add_positive_numbers
+
+def test_add_positive_numbers_success():
+    # Tests the "happy path"
+    assert add_positive_numbers(2, 3) == 5
+
+def test_add_positive_numbers_fail_on_zero():
+    # Tests an edge case / error condition
+    with pytest.raises(ValueError):
+        add_positive_numbers(2, 0)
+
+2. Integration Test
+
+What is it? Tests how two or more "units" (functions, classes, modules) work together. It verifies the interactions and data flow between components. Dependencies are often real (e.g., a test database, a running local service).
+
+Goal: Find bugs in the interfaces and communication between different parts of your system.
+
+Python Example: Testing that a UserService can correctly save a user to a real (test) database.
+
+Generated python
+# user_service.py
+class UserService:
+    def __init__(self, db_connection):
+        self.db = db_connection
+
+    def create_user(self, name):
+        # Interacts with the database component
+        user_id = self.db.users.insert_one({"name": name}).inserted_id
+        return user_id
+
+# test_user_service_integration.py
+def test_user_creation_in_db(real_test_db_connection):
+    # This test uses a real connection to a temporary test database
+    service = UserService(real_test_db_connection)
+    user_id = service.create_user("Alice")
+    
+    # Verify by checking the database directly
+    found_user = real_test_db_connection.users.find_one({"_id": user_id})
+    assert found_user is not None
+    assert found_user["name"] == "Alice"
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Python
+IGNORE_WHEN_COPYING_END
+3. End-to-End (E2E) Test
+
+What is it? Tests the entire application from start to finish, simulating a real user's workflow. It uses real user interfaces (like a web browser or a command-line interface) and connects to all real backend services.
+
+Goal: Verify that the whole system works as expected from the user's perspective.
+
+Python Example (selenium or playwright): A test that simulates a user signing up on a website.
+
+Generated python
+# test_signup_e2e.py
+from playwright.sync_api import Page, expect
+
+def test_user_can_sign_up(live_server_page: Page):
+    # 1. Go to the signup page
+    live_server_page.goto("/signup")
+    
+    # 2. Fill out the form
+    live_server_page.get_by_label("Email").fill("test@example.com")
+    live_server_page.get_by_label("Password").fill("a-secure-password")
+    live_server_page.get_by_role("button", name="Sign Up").click()
+
+    # 3. Verify the user is redirected to the dashboard
+    expect(live_server_page).to_have_url("/dashboard")
+    expect(live_server_page.get_by_text("Welcome, test@example.com!")).to_be_visible()
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Python
+IGNORE_WHEN_COPYING_END
+The "When" and "Why" Tests (Test Strategies)
+
+These aren't distinct types of tests like the ones above, but rather strategies for applying them.
+
+4. Smoke Test
+
+What is it? A small, quick subset of tests (usually a mix of critical unit and integration tests) that are run to ensure the most crucial features of the application are not obviously broken.
+
+Goal: Quickly answer the question: "Is the build so broken that further testing is a waste of time?" It's a sanity check.
+
+Python Example: You might use a pytest marker.
+
+Generated python
+@pytest.mark.smoke
+def test_login_api_returns_200():
+    # ... a critical integration test ...
+
+@pytest.mark.smoke
+def test_home_page_loads():
+    # ... a critical E2E test ...
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Python
+IGNORE_WHEN_COPYING_END
+
+Then you run only these tests after every new build: pytest -m smoke.
+
+5. Regression Test
+
+What is it? Any test that verifies that new code changes have not broken existing, previously working functionality. Your entire test suite (unit, integration, E2E) effectively acts as your regression test suite.
+
+Goal: Prevent old bugs from reappearing and ensure new features don't have unintended side effects.
+
+Python Example: A bug is found where add_positive_numbers fails with large numbers. You write a test to prove the bug exists, then fix the code. That test now becomes a regression test.
+
+Generated python
+def test_add_positive_numbers_with_large_inputs():
+    # This test was added to fix a specific bug (and prevent it from returning)
+    assert add_positive_numbers(1_000_000_000, 2_000_000_000) == 3_000_000_000
+IGNORE_WHEN_COPYING_START
+content_copy
+download
+Use code with caution.
+Python
+IGNORE_WHEN_COPYING_END
+6. Canary Test / Canary Release
+
+What is it? This is more of a deployment strategy than a test type. You deploy the new version of your code to a tiny subset of real users (the "canaries") in production. You then monitor logs and error rates for this small group.
+
+Goal: Detect problems with new code in a real-world production environment with minimal impact. If the canaries are healthy, you gradually roll the release out to everyone.
+
+Example: A load balancer is configured to send 1% of user traffic to the new server version (v2) and 99% to the old, stable version (v1). You monitor the error rate for v2. If it's low, you increase traffic to 10%, then 50%, then 100%.
+
+Test Pyramid Summary
+
+Think of these tests as a pyramid:
+
+Base (Wide): Unit Tests. You should have lots of these. They are fast, cheap, and pinpoint errors precisely.
+
+Middle: Integration Tests. You have fewer of these. They are slower and test the connections between units.
+
+Top (Narrow): E2E Tests. You have the fewest of these. They are very slow, expensive, and can be brittle, but they give the most confidence that the whole system works.
+
+Smoke tests are a slice through the pyramid, taking a few critical tests from each level. Regression tests are the entire pyramid, run to ensure nothing broke. Canary tests happen after the pyramid, in the real world.
