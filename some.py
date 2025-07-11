@@ -1,35 +1,41 @@
-import sys
-sys.dont_write_bytecode = True
-from enum import StrEnum
-import os
+class DrainStatusAPIService:
+    def __init__(self) -> None:
+        self.http_client_config = HttpClientConfig(
+            base_url=DRAINSTATUS_API_CONFIGS.get("base_url", "http://localhost"),
+            default_headers=DRAINSTATUS_API_CONFIGS.get("swdc").get("headers"),
+        )
 
-__author__ = "author"
-module_version: str = "1.0.0"
+    async def get_datacenter_status(self) -> tuple[bool, dict[str, str]]:
+        get_status: dict[str, str] = {}
+        final_status: bool = True
 
-CONTENT_TYPE: str = "application/json"
-DEVELOPER_ATTENTION_EMAIL_SUBJECT: str = "ATTENTION: Notification Service: Error Occurred"
+        async with AsyncHttpClient(self.http_client_config) as client:
+            try:
+                gtdc_response = await client.post(
+                    endpoint=DRAINSTATUS_API_CONFIGS.get("gtdc").get("slug"),
+                    json=DRAINSTATUS_API_CONFIGS.get("gtdc").get("body"),
+                )
+                swdc_response = await client.post(
+                    endpoint=DRAINSTATUS_API_CONFIGS.get("swdc").get("slug"),
+                    json=DRAINSTATUS_API_CONFIGS.get("gtdc").get("body"),
+                )
+                gtdc_response.raise_for_status()
+                swdc_response.raise_for_status()
 
-HOME_DIRECTORIES: dict[str, str] = {
-    "app": "/opt/application",       # this is inside servers.
-    "ose": "/pythonapps",            # this inside OpenShift environments.
-    "workspace": "/projects",        # this is inside the dev-spaces (Orion).
-}
+                if gtdc_response.status_code != 200:
+                    get_status["gtdc"] = f"{gtdc_response.status_code}: {gtdc_response.reason}"
+                    final_status = False
 
-HOME_DIRECTORY: str = HOME_DIRECTORIES.get(
-    os.environ.get("SOURCE_PLATFORM", "app"), "/opt/application"
-)
+                if swdc_response.status_code != 200:
+                    get_status["swdc"] = f"{swdc_response.status_code}: {swdc_response.reason}"
+                    final_status = False
 
-class Constants(StrEnum):
-    cancelled = "cancelled"
-    completed = "completed"
-    disabled = "disabled"
-    enabled = "enabled"
-    failed = "failed"
-    incorrect = "incorrect"
-    in_progress = "in_progress"
-    not_applicable = "not_applicable"
-    not_found = "not_found"
-    not_required = "not_required"
-    pending = "pending"
-    stopped = "stopped"
-    success = "success"
+                get_status["gtdc"] = gtdc_response.json()[0].get("status", None)
+                get_status["swdc"] = swdc_response.json()[0].get("status", None)
+
+            except HttpClientError as http_client_error:
+                get_status["gtdc"] = str(http_client_error)
+                get_status["swdc"] = str(http_client_error)
+                final_status = False
+
+        return final_status, get_status
