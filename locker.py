@@ -1,56 +1,111 @@
-# Inside main.py
-backend_service = BackendService = BackendService.get_service(application=digital_application, environment=throttle_config.environment)
-backend_details = (backend_service.check_cbql_status(), backend_service.get_appdynamics_lps(), backend_service.get_akamai_details(),
-                   backend_service.get_current_status(), backend_service.get_spunk_lps(), backend_service.get_messages(),
-                   backend_service.get_settings(), backend_service.get_throttle_logs_service(), backend_service.get_notification_service())
-manager = Manager(application=digital_application, environment=throttle_config.environment, backend_details=backend_details)
+# builder.py
+from __future__ import annotations
+from typing import Any
 
-# Inside manager.py
-class Manager:
-    def __init__(self, application: str, environment: str, backend_details: tuple[float, dict[str, Any], dict[str, int | str], 
-                 str, dict[str, Any], dict[str, str], dict[str, Any], float | None]):
-        self.appdynamics_lps, self.application, self.application_details, self.akamai_details, self.cbql_status, self.current_status, \
-        self.environment, self.messages, self.settings, self.spunk_lps = backend_details
-        self.helper = Helper(appdynamics_lps=self.appdynamics_lps, application=self.application,
-                             application_details=self.application_details, akamai_details=self.akamai_details,
-                             cbql_status=self.cbql_status, current_status=self.current_status,
-                             environment=self.environment, messages=self.messages, settings=self.settings, spunk_lps=self.spunk_lps)
+from context import AppContext, ThrottleLogsService, NotificationService
 
-# Inside helper.py
-class Helper:
-    def __init__(self, appdynamics_lps: float, application: str, application_details: dict[str, Any], akamai_details: dict[str, int | str],
-                 cbql_status: str, current_status: dict[str, Any], environment: str, messages: dict[str, Any],
-                 settings: dict[str, Any], spunk_lps: float, execution_id: str | None = None, throttle_logs_service: ThrottleLogsService | None = None,
-                 notification_service: NotificationService | None = None):
 
-        self.appdynamics_lps = float(appdynamics_lps)
-        self.application = application
-        self.application_details = application_details
-        self.akamai_details = akamai_details
-        self.cbql_status = cbql_status
-        self.current_status = current_status
-        self.environment = environment
-        self.messages = messages
-        self.settings = settings
-        self.spunk_lps = spunk_lps
+class AppContextBuilder:
+    """
+    Constructs an AppContext object using a fluent interface.
+    This separates the complex construction logic from the AppContext's representation.
+    """
+    def __init__(self, application: str, environment: str):
+        # Required parameters are set in the constructor
+        self._application = application
+        self._environment = environment
+        
+        # Optional/fetched parameters are initialized to None
+        self._cbql_status: str | None = None
+        self._appdynamics_lps: float | None = None
+        self._akamai_details: dict[str, int | str] | None = None
+        self._current_status: dict[str, Any] | None = None
+        self._spunk_lps: dict[str, Any] | None = None
+        self._messages: dict[str, str] | None = None
+        self._settings: dict[str, Any] | None = None
+        self._throttle_logs_service: ThrottleLogsService | None = None
+        self._notification_service: NotificationService | None = None
+        self._execution_id: str | None = None
 
-        # Set the config name based on the application and environment.
-        self.config_name = f"{application}_{environment}_throttle_config"
+    def with_cbql_status(self, status: str) -> AppContextBuilder:
+        self._cbql_status = status
+        return self
 
-        self.execution_id: str | None = execution_id
-        self.throttle_logs_service: ThrottleLogsService | None = throttle_logs_service
-        self.notification_service: NotificationService | None = notification_service
+    def with_appdynamics_lps(self, lps: float) -> AppContextBuilder:
+        self._appdynamics_lps = lps
+        return self
 
-        self._operation: StrEnum | None = None
+    def with_akamai_details(self, details: dict[str, int | str]) -> AppContextBuilder:
+        self._akamai_details = details
+        return self
 
-    @property
-    def operation(self) -> StrEnum:
-        if self._operation is None:
-            raise ValueError("Operation is not set. Please set the operation before accessing it.")
-        return self._operation
+    def with_current_status(self, status: dict[str, Any]) -> AppContextBuilder:
+        self._current_status = status
+        return self
 
-    @operation.setter
-    def operation(self, value: StrEnum) -> None:
-        if not isinstance(value, StrEnum):
-            raise TypeError("Operation must be an instance of StrEnum.")
-        self._operation = value
+    def with_spunk_lps(self, lps: dict[str, Any]) -> AppContextBuilder:
+        self._spunk_lps = lps
+        return self
+
+    def with_messages(self, messages: dict[str, str]) -> AppContextBuilder:
+        self._messages = messages
+        return self
+
+    def with_settings(self, settings: dict[str, Any]) -> AppContextBuilder:
+        self._settings = settings
+        return self
+        
+    def with_throttle_logs_service(self, service: ThrottleLogsService) -> AppContextBuilder:
+        self._throttle_logs_service = service
+        return self
+
+    def with_notification_service(self, service: NotificationService) -> AppContextBuilder:
+        self._notification_service = service
+        return self
+        
+    def with_execution_id(self, execution_id: str) -> AppContextBuilder:
+        self._execution_id = execution_id
+        return self
+
+    def build(self) -> AppContext:
+        """
+        Validates that all required fields are set and creates the final AppContext object.
+        """
+        required_attrs = [
+            '_cbql_status', '_appdynamics_lps', '_akamai_details', '_current_status', 
+            '_spunk_lps', '_messages', '_settings', '_throttle_logs_service', '_notification_service'
+        ]
+        for attr in required_attrs:
+            if getattr(self, attr) is None:
+                raise ValueError(f"Cannot build AppContext: '{attr}' is not set.")
+
+        return AppContext(
+            application=self._application,
+            environment=self._environment,
+            cbql_status=self._cbql_status,
+            appdynamics_lps=self._appdynamics_lps,
+            akamai_details=self._akamai_details,
+            current_status=self._current_status,
+            spunk_lps=self._spunk_lps,
+            messages=self._messages,
+            settings=self._settings,
+            throttle_logs_service=self._throttle_logs_service,
+            notification_service=self._notification_service,
+            execution_id=self._execution_id
+        )
+
+
+
+app_context = (
+    AppContextBuilder(application=digital_application, environment=throttle_config.environment)
+    .with_cbql_status(backend_service.check_cbql_status())
+    .with_appdynamics_lps(backend_service.get_appdynamics_lps())
+    .with_akamai_details(backend_service.get_akamai_details())
+    .with_current_status(backend_service.get_current_status())
+    .with_spunk_lps(backend_service.get_spunk_lps())
+    .with_messages(backend_service.get_messages())
+    .with_settings(backend_service.get_settings())
+    .with_throttle_logs_service(backend_service.get_throttle_logs_service())
+    .with_notification_service(backend_service.get_notification_service())
+    .build()
+)
