@@ -1,0 +1,6 @@
+bash-4.4$ tail -1000 mongod.log.2025-09-10T04-00-01 | grep conn20363054
+{"t":{"$date":"2025-09-10T00:00:01.461-04:00"},"s":"I","c":"NETWORK","id":6723804,"ctx":"conn20363054","msg":"Ingress TLS handshake complete","attr":{"durationMillis":3}}
+{"t":{"$date":"2025-09-10T00:00:01.461-04:00"},"s":"E","c":"NETWORK","id":23234,"ctx":"conn20363054","msg":"No SSL certificate provided by peer"}
+{"t":{"$date":"2025-09-10T00:00:01.462-04:00"},"s":"I","c":"NETWORK","id":51800,"ctx":"conn20363054","msg":"client metadata","attr":{"remote":"10.105.124.62:45990","client":"conn20363054","negotiatedCompressors":[],"doc":{"driver":{"name":"pymongo","version":"4.10.0"},"os":{"type":"Linux","name":"Linux","architecture":"x86_64","version":"4.18.0-553.56.1.el8_10.x86_64"},"platform":"CPython 3.12.3.final.0","application":{"name":"SRE_sd-ad69-4bcb8"}}}}
+{"t":{"$date":"2025-09-10T00:00:01.492-04:00"},"s":"I","c":"NETWORK","id":22944,"ctx":"conn20363054","msg":"Connection ended","attr":{"remote":"10.105.124.62:45990","uuid":{"uuid":"907a3b72-8cb5-41b2-be59-19073929dd4b"},"connectionId":20363054,"connectionCount":2467}}
+bash-4.4$
