@@ -1,56 +1,120 @@
-data = [
-    {"id": "1", "name": "ABC-INT-ProjectX"},
-    {"id": "2", "name": "GFD-INT-ProjectY"},
-    {"id": "3", "name": "HJK-PROD-ServiceA"},
-    {"id": "4", "name": "ABC-TEST-ComponentB"},
-    {"id": "5", "name": "XYZ-DEV-FeatureC"},
-    {"id": "6", "name": "GFD-UAT-ModuleD"},
-    {"id": "7", "name": "LMN-INT-TaskE"},
-    {"id": "8", "no_name_field": "oops"},
-    {"id": "9", "name": "NO-HYPHEN"},
-]
+import boto3
+import base64
+import datetime
+from botocore.signers import RequestSigner
+from kubernetes import client, config
 
-allowed_prefixes = {"GFD", "ABC"}
+# --- AWS credentials & settings ---
+AWS_ACCESS_KEY_ID = "your_access_key_id"
+AWS_SECRET_ACCESS_KEY = "your_secret_access_key"
+AWS_SESSION_TOKEN = "your_session_token"
+REGION = "your_region"
+CLUSTER_NAME = "your_cluster_name"
+NAMESPACE = "your_namespace"
 
-filtered_data_comprehension = [
-    item for item in data
-    if item.get("name") and item["name"].split('-')[0] in allowed_prefixes
-]
+# --- Step 1: Get EKS cluster info ---
+session = boto3.Session(
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    aws_session_token=AWS_SESSION_TOKEN,
+    region_name=REGION,
+)
+eks = session.client("eks")
+cluster_info = eks.describe_cluster(name=CLUSTER_NAME)["cluster"]
 
-print("Filtered Data (using list comprehension):")
-for item in filtered_data_comprehension:
-    print(item)
+endpoint = cluster_info["endpoint"]
+cert = cluster_info["certificateAuthority"]["data"]
 
-# Extract IDs from filtered_data_comprehension
-filtered_ids = {item["id"] for item in filtered_data_comprehension}
+# --- Step 2: Generate token for authentication ---
+def get_bearer_token(cluster_name: str, region: str, session: boto3.Session) -> str:
+    service_id = "sts"
+    signer = RequestSigner(
+        service_id,
+        region,
+        service_id,
+        "v4",
+        session.get_credentials(),
+        session.events,
+    )
 
-# Example resources list
-resources = [
-    {"accountId": "1", "arn": "arn:aws:sqs:us-east-1:123456789012:queue1", "awsRegion": "us-east-1", "Name": "QueueA", "Endpoint": "sqs.us-east-1.amazonaws.com"},
-    {"accountId": "2", "arn": "arn:aws:lambda:us-west-2:987654321098:function:func1", "awsRegion": "us-west-2", "Name": "LambdaB", "Endpoint": "lambda.us-west-2.amazonaws.com"},
-    {"accountId": "3", "arn": "arn:aws:ec2:us-east-1:111122223333:instance/i-1234567890abcdef0", "awsRegion": "us-east-1", "Name": "EC2InstanceC", "Endpoint": "ec2.us-east-1.amazonaws.com"},
-    {"accountId": "4", "arn": "arn:aws:s3:::my-bucket", "awsRegion": "us-east-1", "Name": "S3BucketD", "Endpoint": "s3.us-east-1.amazonaws.com"},
-    {"accountId": "6", "arn": "arn:aws:dynamodb:eu-west-1:444455556666:table/MyTable", "awsRegion": "eu-west-1", "Name": "DynamoDBE", "Endpoint": "dynamodb.eu-west-1.amazonaws.com"},
-    {"accountId": "10", "arn": "arn:aws:sns:us-east-1:000011112222:topic1", "awsRegion": "us-east-1", "Name": "SNSTopicF", "Endpoint": "sns.us-east-1.amazonaws.com"},
-]
+    params = {
+        "method": "GET",
+        "url": f"https://sts.{region}.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15",
+        "body": {},
+        "headers": {"x-k8s-aws-id": cluster_name},
+        "context": {},
+    }
 
-# Create a dictionary for quick lookup of data 'name' by 'id'
-data_name_map = {item["id"]: item["name"] for item in filtered_data_comprehension}
+    signed_url = signer.generate_presigned_url(
+        params,
+        region_name=region,
+        expires_in=60,
+        operation_name="",
+    )
 
-final_resource_list = []
-for resource in resources:
-    account_id = resource.get("accountId")
-    if account_id and account_id in filtered_ids:
-        new_resource_entry = {
-            "accountId": account_id,
-            "arn": resource.get("arn"),
-            "awsRegion": resource.get("awsRegion"),
-            "Name": resource.get("Name"),
-            "Endpoint": resource.get("Endpoint"),
-            "account_name": data_name_map.get(account_id) # Get the 'name' from the original data
+    # EKS expects base64 encoded URL token
+    token = "k8s-aws-v1." + base64.urlsafe_b64encode(signed_url.encode()).decode().rstrip("=")
+    return token
+
+token = get_bearer_token(CLUSTER_NAME, REGION, session)
+
+# --- Step 3: Configure Kubernetes client ---
+kube_config = client.Configuration()
+kube_config.host = endpoint
+kube_config.verify_ssl = True
+kube_config.ssl_ca_cert = None
+
+# Write cert to temp file
+import tempfile
+with tempfile.NamedTemporaryFile(delete=False) as ca_file:
+    ca_file.write(base64.b64decode(cert))
+    kube_config.ssl_ca_cert = ca_file.name
+
+kube_config.api_key = {"authorization": "Bearer " + token}
+client.Configuration.set_default(kube_config)
+
+apps_v1 = client.AppsV1Api()
+core_v1 = client.CoreV1Api()
+
+# --- Step 4: List deployments ---
+print(f"📦 Deployments in namespace '{NAMESPACE}':")
+deployments = apps_v1.list_namespaced_deployment(namespace=NAMESPACE)
+for d in deployments.items:
+    print(f" - {d.metadata.name}")
+
+# --- Step 5: Restart the first deployment (as example) ---
+if deployments.items:
+    deployment_name = deployments.items[0].metadata.name
+    print(f"\n🔄 Restarting deployment: {deployment_name}")
+    body = {
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        "kubectl.kubernetes.io/restartedAt": datetime.datetime.utcnow().isoformat()
+                    }
+                }
+            }
         }
-        final_resource_list.append(new_resource_entry)
+    }
+    apps_v1.patch_namespaced_deployment(
+        name=deployment_name,
+        namespace=NAMESPACE,
+        body=body
+    )
+    print("✅ Deployment restarted.")
 
-print("\nFinal Resource List:")
-for item in final_resource_list:
-    print(item)
+    # --- Step 6: Restart a pod by deleting it ---
+    pods = core_v1.list_namespaced_pod(
+        namespace=NAMESPACE,
+        label_selector=f"app={deployment_name}"
+    )
+    if pods.items:
+        pod_name = pods.items[0].metadata.name
+        print(f"🗑️ Deleting pod: {pod_name}")
+        core_v1.delete_namespaced_pod(name=pod_name, namespace=NAMESPACE)
+        print("✅ Pod deleted (will restart automatically).")
+    else:
+        print("⚠️ No pods found for that deployment.")
+else:
+    print("⚠️ No deployments found in this namespace.")
