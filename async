@@ -1,0 +1,95 @@
+import asyncio
+import time
+from random import uniform
+from typing import List, Awaitable
+
+# A queue to hold our tasks (coroutines)
+WORK_QUEUE = asyncio.Queue()
+
+async def producer(tasks: List[Awaitable]):
+    """
+    Adds a list of coroutines (tasks) to the work queue.
+    """
+    for task in tasks:
+        await WORK_QUEUE.put(task)
+    print(f"Producer finished. Added {len(tasks)} tasks to the queue.")
+
+async def consumer(consumer_id: int):
+    """
+    A worker that gets coroutines from the queue and runs them.
+    """
+    print(f"Consumer {consumer_id} started.")
+    while True:
+        task_coro = await WORK_QUEUE.get()
+
+        try:
+            # Run the coroutine we got from the queue
+            await task_coro
+        except asyncio.CancelledError:
+            # Re-raise the cancellation error to allow for proper shutdown
+            raise
+        except Exception as e:
+            print(f"Consumer {consumer_id} failed on a task: {e}")
+        finally:
+            # Always call task_done() whether the task succeeded or failed
+            WORK_QUEUE.task_done()
+            print(f"Consumer {consumer_id} finished a task. Queue size: {WORK_QUEUE.qsize()}")
+
+
+# main_app.py
+
+import asyncio
+import aiohttp
+import time
+from worker_pool import producer, consumer, WORK_QUEUE
+
+# Define the number of consumers we want to use
+NUM_CONSUMERS = 100
+
+async def my_async_task(task_id: int, url: str):
+    """
+    A sample async coroutine to demonstrate the pattern.
+    This can be anything: a web request, database query, etc.
+    """
+    # Simulate some work
+    await asyncio.sleep(uniform(0.1, 1.0))
+    print(f"Task {task_id} is fetching {url}")
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            await response.text()
+    print(f"Task {task_id} completed.")
+
+async def main():
+    # A list of thousands of different async coroutines
+    tasks_to_run = [
+        my_async_task(i, f"http://httpbin.org/delay/{i % 5}")
+        for i in range(2000)
+    ]
+    
+    # Start the producer and consumer tasks
+    producer_task = asyncio.create_task(producer(tasks_to_run))
+    consumer_tasks = [asyncio.create_task(consumer(i)) for i in range(NUM_CONSUMERS)]
+    
+    start_time = time.monotonic()
+    
+    # Wait for the producer to finish putting items in the queue
+    await producer_task
+    
+    # Wait for all tasks in the queue to be completed
+    await WORK_QUEUE.join()
+    
+    # Cancel the consumer tasks to shut them down gracefully
+    for task in consumer_tasks:
+        task.cancel()
+    
+    # Await the cancelled tasks to ensure they've fully shut down
+    await asyncio.gather(*consumer_tasks, return_exceptions=True)
+
+    end_time = time.monotonic()
+    print(f"All {len(tasks_to_run)} tasks processed in {end_time - start_time:.2f} seconds.")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+
+
