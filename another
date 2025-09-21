@@ -1,0 +1,17 @@
+import asyncio
+
+policy_maps = await self.eks_service.get_eks_cluster_policies_map_intersection()
+
+async def check(pm):
+    vault_path = deep_get(pm, keys="vault_path")
+    if await self.hashicorp_service.authorized_path(vault_path=vault_path):
+        return pm
+    else:
+        logger.warning(
+            f"Account not authorized for vault_path: {vault_path}",
+            extra=self.logger_extras,
+        )
+        return None
+
+results = await asyncio.gather(*(check(pm) for pm in policy_maps))
+get_all_policy_maps_list = [pm for pm in results if pm]
