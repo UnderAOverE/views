@@ -1,70 +1,106 @@
 import asyncio
 
-async def process_clusters(authorized_ids: list[str], clusters: list[dict[str, str]], aws_secrets: dict[str, str], CHECK_AUTHORIZED: bool) -> list[dict[str, str]]:
+async def flatten_clusters_by_namespace(clusters: list[dict]) -> list[dict]:
     """
-    Asynchronously processes a list of clusters based on authorization and adds AWS secrets.
+    Asynchronously flattens a list of clusters, replicating cluster information
+    for each namespace within the 'namespaces' list.
 
     Args:
-        authorized_ids: A list of authorized account IDs.
         clusters: A list of dictionaries, where each dictionary represents a cluster
-                  and has an "account_id" key.
-        aws_secrets: A dictionary of AWS secrets to be added to each cluster.
-        CHECK_AUTHORIZED: A boolean flag to enable/disable authorization checks.
+                  and contains a 'namespaces' key (list[str]).
 
     Returns:
-        A new list of processed clusters.
+        A new list of dictionaries, where each original cluster entry is replicated
+        for each of its namespaces, with 'namespace' as a new key.
     """
-    processed_clusters = []
+    flattened_list = []
 
-    async def process_single_cluster(cluster):
-        if CHECK_AUTHORIZED and cluster.get("account_id") not in authorized_ids:
-            return None  # Discard unauthorized clusters
-        
-        # Create a new dictionary to avoid modifying the original cluster in place
-        new_cluster = cluster.copy()
-        new_cluster.update(aws_secrets)
-        return new_cluster
+    async def process_single_cluster(cluster_data):
+        cluster_name = cluster_data.get("name")
+        account_id = cluster_data.get("account_id")
+        region = cluster_data.get("region")
+        environment = cluster_data.get("environment")
+        namespaces = cluster_data.get("namespaces", [])
+
+        if not namespaces:
+            # If no namespaces, just add the cluster data without a namespace key
+            # or handle as per specific requirement (e.g., skip it)
+            new_entry = {
+                "name": cluster_name,
+                "account_id": account_id,
+                "region": region,
+                "environment": environment,
+                "namespace": None # Or remove this key if no namespace is desired
+            }
+            return [new_entry]
+
+        # Create a list of new entries for each namespace
+        namespace_entries = []
+        for namespace in namespaces:
+            new_entry = {
+                "name": cluster_name,
+                "account_id": account_id,
+                "region": region,
+                "environment": environment,
+                "namespace": namespace,
+            }
+            namespace_entries.append(new_entry)
+        return namespace_entries
 
     # Create a list of tasks for processing each cluster concurrently
     tasks = [process_single_cluster(cluster) for cluster in clusters]
+    
+    # Gather all results. Each result from process_single_cluster is a list of dictionaries.
     results = await asyncio.gather(*tasks)
 
-    # Filter out None values (discarded clusters)
-    processed_clusters = [result for result in results if result is not None]
+    # Flatten the list of lists into a single list
+    for sublist in results:
+        flattened_list.extend(sublist)
 
-    return processed_clusters
+    return flattened_list
 
 # Example Usage:
 async def main():
-    authorized_ids_example = ["123456789012", "987654321098"]
-    clusters_example = [
-        {"cluster_name": "dev-cluster", "account_id": "123456789012", "region": "us-east-1"},
-        {"cluster_name": "prod-cluster", "account_id": "111122223333", "region": "us-west-2"},
-        {"cluster_name": "test-cluster", "account_id": "987654321098", "region": "eu-central-1"},
-        {"cluster_name": "unauth-cluster", "account_id": "444455556666", "region": "ap-southeast-1"},
+    clusters_data = [
+        {
+            "name": "cluster-1",
+            "account_id": "123",
+            "region": "us-east-1",
+            "environment": "dev",
+            "namespaces": ["ns-a", "ns-b", "ns-c"],
+        },
+        {
+            "name": "cluster-2",
+            "account_id": "456",
+            "region": "us-west-2",
+            "environment": "prod",
+            "namespaces": ["ns-x", "ns-y"],
+        },
+        {
+            "name": "cluster-3",
+            "account_id": "789",
+            "region": "eu-central-1",
+            "environment": "test",
+            "namespaces": [], # Cluster with no namespaces
+        },
+        {
+            "name": "cluster-4",
+            "account_id": "101",
+            "region": "ap-south-1",
+            "environment": "dev",
+            "namespaces": ["ns-p"],
+        },
     ]
-    aws_secrets_example = {
-        "aws_access_key_id": "AKIAXXXXXXXXXXXXXXXX",
-        "aws_secret_access_key": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-        "aws_session_token": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-    }
 
-    # Scenario 1: CHECK_AUTHORIZED is enabled
-    print("--- CHECK_AUTHORIZED Enabled ---")
-    processed_clusters_enabled = await process_clusters(
-        authorized_ids_example, clusters_example, aws_secrets_example, CHECK_AUTHORIZED=True
-    )
-    for cluster in processed_clusters_enabled:
+    print("--- Original Clusters ---")
+    for cluster in clusters_data:
         print(cluster)
     print("\n")
 
-    # Scenario 2: CHECK_AUTHORIZED is disabled
-    print("--- CHECK_AUTHORIZED Disabled ---")
-    processed_clusters_disabled = await process_clusters(
-        authorized_ids_example, clusters_example, aws_secrets_example, CHECK_AUTHORIZED=False
-    )
-    for cluster in processed_clusters_disabled:
-        print(cluster)
+    print("--- Flattened Clusters ---")
+    flattened_clusters = await flatten_clusters_by_namespace(clusters_data)
+    for entry in flattened_clusters:
+        print(entry)
     print("\n")
 
 if __name__ == "__main__":
