@@ -1,22 +1,71 @@
 import asyncio
 
-eks_clusters = await self.eks_clusters_repository.get_all_eks_clusters()
-if not eks_clusters:
-    logger.warning(
-        "get_eks_cluster_policies_map_intersection: No EKS clusters found.",
-        extra=logger_extras,
-    )
-    return return_intersection_map
+async def process_clusters(authorized_ids: list[str], clusters: list[dict[str, str]], aws_secrets: dict[str, str], CHECK_AUTHORIZED: bool) -> list[dict[str, str]]:
+    """
+    Asynchronously processes a list of clusters based on authorization and adds AWS secrets.
 
-async def fetch_and_check(cluster):
-    secret_path_dict = await self.policies_repository.fetch_policy_path(cluster.account_id)
-    if secret_path_dict:
-        return cluster.model_dump()
-    logger.warning(
-        f"get_eks_cluster_policies_map_intersection: No policies found for account_id {cluster.account_id}.",
-        extra=logger_extras,
-    )
-    return None
+    Args:
+        authorized_ids: A list of authorized account IDs.
+        clusters: A list of dictionaries, where each dictionary represents a cluster
+                  and has an "account_id" key.
+        aws_secrets: A dictionary of AWS secrets to be added to each cluster.
+        CHECK_AUTHORIZED: A boolean flag to enable/disable authorization checks.
 
-results = await asyncio.gather(*(fetch_and_check(c) for c in eks_clusters))
-return_intersection_map.extend([r for r in results if r])
+    Returns:
+        A new list of processed clusters.
+    """
+    processed_clusters = []
+
+    async def process_single_cluster(cluster):
+        if CHECK_AUTHORIZED and cluster.get("account_id") not in authorized_ids:
+            return None  # Discard unauthorized clusters
+        
+        # Create a new dictionary to avoid modifying the original cluster in place
+        new_cluster = cluster.copy()
+        new_cluster.update(aws_secrets)
+        return new_cluster
+
+    # Create a list of tasks for processing each cluster concurrently
+    tasks = [process_single_cluster(cluster) for cluster in clusters]
+    results = await asyncio.gather(*tasks)
+
+    # Filter out None values (discarded clusters)
+    processed_clusters = [result for result in results if result is not None]
+
+    return processed_clusters
+
+# Example Usage:
+async def main():
+    authorized_ids_example = ["123456789012", "987654321098"]
+    clusters_example = [
+        {"cluster_name": "dev-cluster", "account_id": "123456789012", "region": "us-east-1"},
+        {"cluster_name": "prod-cluster", "account_id": "111122223333", "region": "us-west-2"},
+        {"cluster_name": "test-cluster", "account_id": "987654321098", "region": "eu-central-1"},
+        {"cluster_name": "unauth-cluster", "account_id": "444455556666", "region": "ap-southeast-1"},
+    ]
+    aws_secrets_example = {
+        "aws_access_key_id": "AKIAXXXXXXXXXXXXXXXX",
+        "aws_secret_access_key": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+        "aws_session_token": "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    }
+
+    # Scenario 1: CHECK_AUTHORIZED is enabled
+    print("--- CHECK_AUTHORIZED Enabled ---")
+    processed_clusters_enabled = await process_clusters(
+        authorized_ids_example, clusters_example, aws_secrets_example, CHECK_AUTHORIZED=True
+    )
+    for cluster in processed_clusters_enabled:
+        print(cluster)
+    print("\n")
+
+    # Scenario 2: CHECK_AUTHORIZED is disabled
+    print("--- CHECK_AUTHORIZED Disabled ---")
+    processed_clusters_disabled = await process_clusters(
+        authorized_ids_example, clusters_example, aws_secrets_example, CHECK_AUTHORIZED=False
+    )
+    for cluster in processed_clusters_disabled:
+        print(cluster)
+    print("\n")
+
+if __name__ == "__main__":
+    asyncio.run(main())
