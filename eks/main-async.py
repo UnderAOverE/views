@@ -55,3 +55,49 @@ if __name__ == "__main__":
     # To see more debug output, change logging level to DEBUG
     # logger.setLevel(logging.DEBUG)
     asyncio.run(main())
+    
+    except Exception as e:
+        logger.critical(f"Main TaskGroup encountered an unhandled exception: {type(e).__name__} - {e}", exc_info=True)
+        logger.info(f"Main processing halted. Total time taken: {time.time() - start_time:.2f} seconds.")
+
+
+
+# --- Main Orchestration ---
+async def main():
+    # ... (Initialization code remains the same)
+
+    # 4. Use TaskGroup for the top-level funcA calls
+    try:
+        async with asyncio.TaskGroup() as tg:
+            for item_id in initial_item_ids:
+                task = tg.create_task(
+                    # ... funcA call ...
+                )
+                all_results.append(task)
+
+        # All tasks in the TaskGroup have completed (SUCCESS path)
+        final_processed_results = [t.result() for t in all_results]
+        # ... (Success summary and logging remains the same)
+
+    # ⬇️ THIS IS WHERE THE NEW CODE GOES ⬇️
+    except BaseException as e: # Catch BaseException to include CancelledError and ExceptionGroup
+        logger.critical(f"\n--- Main TaskGroup Halted ---")
+
+        # Check if the error is the structured error from TaskGroup (ExceptionGroup)
+        if isinstance(e, ExceptionGroup):
+            logger.critical(f"TaskGroup failed with {len(e.exceptions)} sub-exceptions.")
+            for i, sub_e in enumerate(e.exceptions):
+                # Log details of each exception within the group
+                logger.error(f"  [{i+1}/{len(e.exceptions)}] Sub-task failed: {type(sub_e).__name__} - {sub_e}", exc_info=True)
+        else:
+            # Handle other unhandled errors (e.g., if a TaskGroup wasn't involved)
+            logger.critical(f"Main orchestration failed: {type(e).__name__} - {e}", exc_info=True)
+
+        logger.info(f"Main processing halted. Total time taken: {time.time() - start_time:.2f} seconds.")
+
+
+if __name__ == "__main__":
+# ... (rest of the file)
+
+
+
