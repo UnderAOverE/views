@@ -1,0 +1,26 @@
+import boto3
+import botocore.session
+from botocore.credentials import RefreshableCredentials
+import datetime
+
+def refresh():
+    # Call STS or your IdP here
+    # Return new creds in this structure
+    return {
+        'access_key': 'AKIA...',
+        'secret_key': 'SECRET...',
+        'token': 'SESSION_TOKEN...',
+        'expiry_time': (datetime.datetime.utcnow() + datetime.timedelta(minutes=15)).isoformat()
+    }
+
+session = botocore.session.get_session()
+creds = RefreshableCredentials.create_from_metadata(
+    metadata=refresh(),
+    refresh_using=refresh,
+    method='sts-refresh'
+)
+
+session._credentials = creds
+autorefresh_client = boto3.Session(botocore_session=session).client('s3')
+
+print(autorefresh_client.list_buckets())
