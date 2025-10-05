@@ -1,0 +1,30 @@
+applied_policy = "Foreground"
+
+if policy == "immediate":
+    grace_period_seconds = 0
+elif policy == "kill":
+    applied_policy = "Background"
+    grace_period_seconds = 0
+elif policy == "orphan":
+    applied_policy = "Orphan"
+    grace_period_seconds = 0
+elif policy == "graceful":
+    applied_policy = "Foreground"
+else:
+    message = f"Invalid policy '{policy}' specified. Valid options are 'graceful', 'immediate', 'kill', or 'orphan'."
+    logger.error(message)
+    return 400, message
+
+# endIfElif
+
+if isinstance(grace_period_seconds, str) and grace_period_seconds.isdigit():
+    grace_period_seconds = int(grace_period_seconds)
+elif not isinstance(grace_period_seconds, int):
+    message = f"Invalid grace_period_seconds '{grace_period_seconds}' specified. It must be an integer!"
+    logger.error(message)
+    return 400, message
+else:
+    if grace_period_seconds < 0:
+        grace_period_seconds = 30
+
+# endIf
