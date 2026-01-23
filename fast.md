@@ -1,67 +1,69 @@
-class OSEGuardRailService:
-    RESOURCE_POD_READINESS: str = "Resource Pod Readiness"
-    CURRENT_REPLICAS: str = "Current Replicas Check"
-    PDB_CONSTRAINTS: str = "PDB Constraints Check"
-    HPA_CONSTRAINTS: str = "HPA Constraints Check"
-    RESOURCE_QUOTA: str = "Resource Quota Check"
-    LIMIT_RANGE: str = "Limit Range Check"
-    REPLICA_LIMIT: str = "Replica Limit Check"
+class OSESettings(BaseSettings):  # 5 usages
 
-    CHECK_NAMES: dict[str, str] = {
-        "RESOURCE_POD_READINESS": RESOURCE_POD_READINESS,
-        "CURRENT_REPLICAS": CURRENT_REPLICAS,
-        "PDB_CONSTRAINTS": PDB_CONSTRAINTS,
-        "HPA_CONSTRAINTS": HPA_CONSTRAINTS,
-        "RESOURCE_QUOTA": RESOURCE_QUOTA,
-        "LIMIT_RANGE": LIMIT_RANGE,
-        "REPLICA_LIMIT": REPLICA_LIMIT,
-    }
+    bearer_token_url: str = (
+        "https://oauth-openshift.apps.REPLACE_WITH_CLUSTER_NAME."
+        "REPLACE_WITH_DOMAIN/oauth/authorize?client_id=openshift"
+        "&challenging-client&response_type=token"
+    )
 
-    def __init__(self,) -> None:
-        """
-        OSEGuardRailService constructor.
-        :return: None
-        :rtype: None
-        """
-        self.ose_settings = environment_settings.ose
-        self.content_type = f"Content-Type: {self.ose_settings.content_type}"
-        self.httpx_client: HTTPXClient = HTTPXClient(
-            ca_certificate_path=self.ose_settings.ca_certificate_path,
-            verify_ssl=self.ose_settings.ssl_verify,
-        )
-    # enddef
+    ca_certificate_path: str = (
+        f"{HOME_DIRECTORY}/src/common/config/certificates/ca-prod.pem"
+    )
 
-    @classmethod
-    async def get_service(cls,) -> Self:
-        """
-        Factory method to create an instance of OSEGuardRailService.
-        :return: An instance of OSEGuardRailService.
-        :rtype: OSEGuardRailService
-        """
-        return cls()
-    # endAsyncDef
+    cluster_api_url: str = (
+        "https://api.REPLACE_WITH_CLUSTER_NAME."
+        "REPLACE_WITH_DOMAIN:REPLACE_WITH_API_PORT"
+    )
 
-    async def get_scale_settings(self,) -> ScaleSettingsModel:
-        """
-        Get scale settings from database with fallback to defaults.
-        :return: Scale settings model with configured limits and enforcement flags.
-        :rtype: ScaleSettingsModel
-        """
-        try:
-            db_settings = await self.settings_service.get_db_settings(
-                environment=OSE_ENVIRONMENT,
-            )
-            if isinstance(db_settings, str) or db_settings is None:
-                logger.warning(
-                    f"Could not fetch DB settings for {OSE_ENVIRONMENT}, using defaults"
-                )
-                return ScaleSettingsModel()
+    content_type: str = CONTENT_TYPE
 
-            return db_settings
-        except Exception as generic_exception:
-            logger.warning(
-                f"Error fetching scale settings: {generic_exception}, using defaults"
-            )
-            return ScaleSettingsModel()
-    # endTryExcept
-# endAsyncDef
+    deployment_url: str = (
+        "https://console-openshift-console.apps.REPLACE_WITH_CLUSTER_NAME."
+        "REPLACE_WITH_DOMAIN/k8s/ns/REPLACE_WITH_NAMESPACE/"
+        "deployments/REPLACE_WITH_DEPLOYMENT_NAME"
+    )
+
+    deployment_uri: str = (
+        "apis/apps/v1/namespaces/REPLACE_WITH_NAMESPACE/"
+        "deployments/REPLACE_WITH_DEPLOYMENT_NAME"
+    )
+
+    deployments_list_uri: str = (
+        "apis/apps/v1/namespaces/REPLACE_WITH_NAMESPACE/deployments"
+    )
+
+    hpa_uri: str = (
+        "apis/autoscaling/v1/namespaces/REPLACE_WITH_NAMESPACE/"
+        "horizontalpodautoscalers"
+    )
+
+    limit_ranges_uri: str = (
+        "api/v1/namespaces/REPLACE_WITH_NAMESPACE/limitranges"
+    )
+
+    pdb_uri: str = (
+        "apis/policy/v1/namespaces/REPLACE_WITH_NAMESPACE/"
+        "poddisruptionbudgets"
+    )
+
+    pods_labels_uri: str = (
+        "api/v1/namespaces/REPLACE_WITH_NAMESPACE/pods"
+        "?labelSelector=REPLACE_WITH_LABEL_SELECTOR"
+    )
+
+    pods_uri: str = (
+        "api/v1/namespaces/REPLACE_WITH_NAMESPACE/pods"
+    )
+
+    pod_delete_uri: str = (
+        "api/v1/namespaces/REPLACE_WITH_NAMESPACE/pods/"
+        "REPLACE_WITH_POD_NAME"
+    )
+
+    projects_uri: str = "apis/project.openshift.io/v1/projects"
+
+    resourcequotas_uri: str = (
+        "api/v1/namespaces/REPLACE_WITH_NAMESPACE/resourcequotas"
+    )
+
+    ssl_verify: bool = True
