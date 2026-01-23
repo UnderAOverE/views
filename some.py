@@ -1,188 +1,264 @@
-import boto3
-import base64
-import datetime
-import tempfile
-import requests
-from botocore.signers import RequestSigner
-
-# --- AWS creds ---
-AWS_ACCESS_KEY_ID = "your_access_key_id"
-AWS_SECRET_ACCESS_KEY = "your_secret_access_key"
-AWS_SESSION_TOKEN = "your_session_token"
-REGION = "your_region"
-CLUSTER_NAME = "your_cluster_name"
-NAMESPACE = "aws"   # the namespace you care about
-
-# --- Step 1: Connect to AWS EKS and get cluster info ---
-session = boto3.Session(
-    aws_access_key_id=AWS_ACCESS_KEY_ID,
-    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-    aws_session_token=AWS_SESSION_TOKEN,
-    region_name=REGION,
-)
-eks = session.client("eks")
-cluster_info = eks.describe_cluster(name=CLUSTER_NAME)["cluster"]
-endpoint = cluster_info["endpoint"]
-ca_data = cluster_info["certificateAuthority"]["data"]
-
-# --- Step 2: Get Bearer token ---
-def get_bearer_token(cluster_name: str, region: str, session: boto3.Session) -> str:
-    service_id = "sts"
-    signer = RequestSigner(
-        service_id, region, service_id, "v4",
-        session.get_credentials(), session.events,
-    )
-    params = {
-        "method": "GET",
-        "url": f"https://sts.{region}.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15",
-        "body": {},
-        "headers": {"x-k8s-aws-id": cluster_name},
-        "context": {},
-    }
-    signed_url = signer.generate_presigned_url(
-        params, region_name=region, expires_in=60, operation_name=""
-    )
-    token = "k8s-aws-v1." + base64.urlsafe_b64encode(signed_url.encode()).decode().rstrip("=")
-    return token
-
-token = get_bearer_token(CLUSTER_NAME, REGION, session)
-
-with tempfile.NamedTemporaryFile(delete=False) as ca_file:
-    ca_file.write(base64.b64decode(ca_data))
-    ca_cert_path = ca_file.name
-
-headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-
-# --- Step 3: Get Deployments & StatefulSets ---
-def get_deployments():
-    url = f"{endpoint}/apis/apps/v1/namespaces/{NAMESPACE}/deployments"
-    resp = requests.get(url, headers=headers, verify=ca_cert_path)
-    resp.raise_for_status()
-    return resp.json()["items"]
-
-def get_statefulsets():
-    url = f"{endpoint}/apis/apps/v1/namespaces/{NAMESPACE}/statefulsets"
-    resp = requests.get(url, headers=headers, verify=ca_cert_path)
-    resp.raise_for_status()
-    return resp.json()["items"]
-
-deployments = get_deployments()
-statefulsets = get_statefulsets()
-
-print(f"📦 Deployments in {NAMESPACE}: {[d['metadata']['name'] for d in deployments]}")
-print(f"📦 StatefulSets in {NAMESPACE}: {[s['metadata']['name'] for s in statefulsets]}")
-
-# --- Step 4: Get pods for a given controller (Deployment/StatefulSet) ---
-def get_pods_for_controller(controller_name):
-    url = f"{endpoint}/api/v1/namespaces/{NAMESPACE}/pods"
-    resp = requests.get(url, headers=headers, verify=ca_cert_path)
-    resp.raise_for_status()
-    pods = resp.json()["items"]
-
-    controller_pods = []
-    for p in pods:
-        owner_refs = p["metadata"].get("ownerReferences", [])
-        if any(controller_name in o["name"] for o in owner_refs):
-            controller_pods.append(p["metadata"]["name"])
-    return controller_pods
-
-# --- Step 5: Actions ---
-def restart_controller(controller_type, name):
-    url = f"{endpoint}/apis/apps/v1/namespaces/{NAMESPACE}/{controller_type}/{name}"
-    patch = {
-        "spec": {
-            "template": {
-                "metadata": {
-                    "annotations": {
-                        "kubectl.kubernetes.io/restartedAt": datetime.datetime.utcnow().isoformat()
-                    }
-                }
-            }
-        }
-    }
-    resp = requests.patch(url, headers=headers, json=patch, verify=ca_cert_path)
-    resp.raise_for_status()
-    print(f"✅ Restarted {controller_type} {name}")
-
-def scale_controller(controller_type, name, replicas):
-    url = f"{endpoint}/apis/apps/v1/namespaces/{NAMESPACE}/{controller_type}/{name}/scale"
-    patch = {"spec": {"replicas": replicas}}
-    resp = requests.patch(url, headers=headers, json=patch, verify=ca_cert_path)
-    resp.raise_for_status()
-    print(f"✅ Scaled {controller_type} {name} to {replicas} replicas")
-
-def delete_pod(pod_name):
-    url = f"{endpoint}/api/v1/namespaces/{NAMESPACE}/pods/{pod_name}"
-    resp = requests.delete(url, headers=headers, verify=ca_cert_path)
-    resp.raise_for_status()
-    print(f"🗑️ Deleted pod {pod_name} (will restart if controlled by a deployment/SS)")
-
-# --- Example usage ---
-for d in deployments:
-    name = d["metadata"]["name"]
-    pods = get_pods_for_controller(name)
-    print(f"\nDeployment {name} has pods: {pods}")
-    restart_controller("deployments", name)
-
-for s in statefulsets:
-    name = s["metadata"]["name"]
-    pods = get_pods_for_controller(name)
-    print(f"\nStatefulSet {name} has pods: {pods}")
-    scale_controller("statefulsets", name, 0)   # stop
-    scale_controller("statefulsets", name, 1)   # start back
-    
-
-
-
-
+import asyncio
+import logging
 from dataclasses import dataclass
-from typing import List, Dict, Any
+from typing import Self, Any, Optional, List, Tuple
+from pydantic import BaseModel, Field
+
+# Assuming these are imported from your existing structure
+# from src.common.settings import environment_settings
+# from src.common.http_client import HTTPXClient
+# from src.apis.service.ose.models import ScaleSettingsModel
+
+logger = logging.getLogger(__name__)
+
+# --- Models ---
 
 @dataclass
-class Pod:
-    name: str
-    owner_kind: str
-    owner_name: str
+class GuardRailCheckResult:
+    check_name: str
+    message: str
+    passed: bool
 
-@dataclass
-class Controller:
-    kind: str            # "Deployment" or "StatefulSet"
-    name: str
-    replicas: int
-    pods: List[Pod]
+class NamespaceConstraintsResponse(BaseModel):
+    cluster_name: str
+    namespace: str
+    hpa: List[dict[str, Any]] = Field(default_factory=list)
+    pdb: List[dict[str, Any]] = Field(default_factory=list)
+    resource_quotas: List[dict[str, Any]] = Field(default_factory=list)
+    limit_ranges: List[dict[str, Any]] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
 
-# --- casting helpers ---
-def cast_pod(p: Dict[str, Any]) -> Pod:
-    owners = p["metadata"].get("ownerReferences", [])
-    if owners:
-        owner = owners[0]
-        return Pod(
-            name=p["metadata"]["name"],
-            owner_kind=owner["kind"],
-            owner_name=owner["name"],
+    class Config:
+        arbitrary_types_allowed = True
+
+# --- Utilities ---
+
+class K8sResourceParser:
+    @staticmethod
+    def parse_cpu(cpu_str: str) -> int:
+        if not cpu_str: return 0
+        if str(cpu_str).endswith("m"):
+            return int(cpu_str[:-1])
+        return int(float(cpu_str) * 1000)
+
+    @staticmethod
+    def parse_memory(mem_str: str) -> int:
+        if not mem_str: return 0
+        units = {
+            "Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4,
+            "K": 1000, "M": 1000**2, "G": 1000**3, "T": 1000**4
+        }
+        for unit, multiplier in units.items():
+            if str(mem_str).endswith(unit):
+                return int(mem_str[:-len(unit)]) * multiplier
+        return int(mem_str)
+
+# --- Service ---
+
+class OSEGuardRailService:
+    RESOURCE_POD_READINESS: str = "Resource Pod Readiness"
+    CURRENT_REPLICAS: str = "Current Replicas Check"
+    PDB_CONSTRAINTS: str = "PDB Constraints Check"
+    HPA_CONSTRAINTS: str = "HPA Constraints Check"
+    RESOURCE_QUOTA: str = "Resource Quota Check"
+    LIMIT_RANGE: str = "Limit Range Check"
+    REPLICA_LIMIT: str = "Replica Limit Check"
+    OBJECT_STATE: str = "Object Current State Check"
+
+    def __init__(self) -> None:
+        self.ose_settings = environment_settings.ose
+        # Assuming HTTPXClient is pre-configured
+        self.httpx_client = HTTPXClient(
+            ca_certificate_path=self.ose_settings.ca_certificate_path,
+            verify_ssl=self.ose_settings.ssl_verify,
         )
-    else:
-        return Pod(name=p["metadata"]["name"], owner_kind="Unknown", owner_name="Unknown")
 
-def cast_controller(obj: Dict[str, Any], kind: str, pods: List[Pod]) -> Controller:
-    return Controller(
-        kind=kind.capitalize(),  # Deployment or StatefulSet
-        name=obj["metadata"]["name"],
-        replicas=obj["spec"].get("replicas", 1),
-        pods=pods,
-    )
-    
-raw_deployments = list_controllers("deployments")
-controllers: List[Controller] = []
+    @classmethod
+    async def get_service(cls) -> Self:
+        return cls()
 
-for d in raw_deployments:
-    pods_raw = get_pods_for_controller(d["metadata"]["name"])
-    pods = [cast_pod(p) for p in pods_raw]
-    controllers.append(cast_controller(d, "deployment", pods))
+    async def _make_k8s_request(self, uri: str, token: str, cluster_url: str) -> dict:
+        url = f"{cluster_url.rstrip('/')}/{uri.lstrip('/')}"
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        response = await self.httpx_client.get(url, headers=headers)
+        response.raise_for_status()
+        return response.json()
 
-# Now you have typed Python objects
-for c in controllers:
-    print(f"{c.kind} {c.name} → replicas={c.replicas}, pods={[p.name for p in c.pods]}")
-    
-    
+    async def get_scale_settings(self) -> Any: # Replace Any with ScaleSettingsModel
+        try:
+            # Using your logic from the prompt
+            db_settings = await self.settings_service.get_db_settings(environment="PROD")
+            if not db_settings or isinstance(db_settings, str):
+                return ScaleSettingsModel()
+            return db_settings
+        except Exception as e:
+            logger.warning(f"Error fetching scale settings: {e}, using defaults")
+            return ScaleSettingsModel()
 
+    async def perform_checks(
+        self, cluster_name: str, cluster_api_url: str, bearer_token: str, 
+        namespace: str, object_name: str, object_type: str, 
+        target_replicas: int, operation_type: str
+    ) -> Tuple[bool, List[str], List[GuardRailCheckResult]]:
+        
+        results = []
+        success_messages = []
+        all_passed = True
+
+        scale_settings = await self.get_scale_settings()
+        resource_data = await self._get_resource(cluster_api_url, bearer_token, namespace, object_name, object_type)
+        current_replicas = resource_data.get("spec", {}).get("replicas", 0)
+
+        # Logic Mapping
+        if operation_type in ["restart", "stop"]:
+            passed, msg = await self._check_pod_readiness(cluster_api_url, bearer_token, namespace, object_name)
+            results.append(GuardRailCheckResult(self.RESOURCE_POD_READINESS, msg, passed))
+
+        elif operation_type == "start":
+            passed = (current_replicas == 0)
+            msg = "Object is stopped" if passed else f"Object has {current_replicas} active replicas"
+            results.append(GuardRailCheckResult(self.OBJECT_STATE, msg, passed))
+
+        elif operation_type == "scale":
+            if current_replicas == target_replicas:
+                results.append(GuardRailCheckResult(self.CURRENT_REPLICAS, "Target matches current replicas", False))
+            
+            hpa_passed, hpa_msg = await self._check_hpa_constraints(cluster_api_url, bearer_token, namespace, object_name, target_replicas)
+            results.append(GuardRailCheckResult(self.HPA_CONSTRAINTS, hpa_msg, hpa_passed))
+
+            # Scaling Down
+            if target_replicas < current_replicas and scale_settings.scale.enforce_pdb_check:
+                pdb_p, pdb_m = await self._check_pdb_constraints(cluster_api_url, bearer_token, namespace)
+                results.append(GuardRailCheckResult(self.PDB_CONSTRAINTS, pdb_m, pdb_p))
+
+            # Scaling Up
+            if target_replicas > current_replicas:
+                if target_replicas > scale_settings.scale.up_replicas_hard_limit:
+                    results.append(GuardRailCheckResult(self.REPLICA_LIMIT, f"Exceeds hard limit: {scale_settings.scale.up_replicas_hard_limit}", False))
+                
+                if scale_settings.scale.enforce_resource_quota_check:
+                    q_p, q_m = await self._check_resource_quotas(cluster_api_url, bearer_token, namespace, resource_data, target_replicas, current_replicas)
+                    results.append(GuardRailCheckResult(self.RESOURCE_QUOTA, q_m, q_p))
+
+                if scale_settings.scale.enforce_limit_ranges_check:
+                    lr_p, lr_m = await self._check_limit_ranges(cluster_api_url, bearer_token, namespace, resource_data)
+                    results.append(GuardRailCheckResult(self.LIMIT_RANGE, lr_m, lr_p))
+
+        # Compile totals
+        all_passed = all(r.passed for r in results)
+        success_messages = [f"{r.check_name}: {r.message}" for r in results if r.passed]
+
+        return all_passed, success_messages, results
+
+    async def get_namespace_constraints(
+        self, cluster_name: str, cluster_api_url: str, bearer_token: str, namespace: str
+    ) -> NamespaceConstraintsResponse:
+        uris = {
+            "hpa": self.ose_settings.hpa_uri.replace("REPLACE_WITH_NAMESPACE", namespace),
+            "pdb": self.ose_settings.pdb_uri.replace("REPLACE_WITH_NAMESPACE", namespace),
+            "resource_quotas": self.ose_settings.resourcequotas_uri.replace("REPLACE_WITH_NAMESPACE", namespace),
+            "limit_ranges": self.ose_settings.limit_ranges_uri.replace("REPLACE_WITH_NAMESPACE", namespace),
+        }
+
+        keys = list(uris.keys())
+        tasks = [self._make_k8s_request(uris[k], bearer_token, cluster_api_url) for k in keys]
+        responses = await asyncio.gather(*tasks, return_exceptions=True)
+
+        resp_model = NamespaceConstraintsResponse(cluster_name=cluster_name, namespace=namespace)
+
+        for i, key in enumerate(keys):
+            res = responses[i]
+            if isinstance(res, Exception):
+                resp_model.errors.append(f"{key}: {str(res)}")
+                continue
+            
+            items = res.get("items", [])
+            setattr(resp_model, key, items)
+
+        return resp_model
+
+    # --- Private Helpers ---
+
+    async def _get_resource(self, url, token, ns, name, rtype) -> dict:
+        # Resolve correct URI based on type
+        is_dep = rtype.lower() == "deployment"
+        uri_template = self.ose_settings.deployment_uri if is_dep else self.ose_settings.statefulset_uri
+        
+        # Mapping Deployment -> DEPLOYMENT_NAME or StatefulSet -> STATEFULSET_NAME
+        placeholder = f"REPLACE_WITH_{rtype.upper()}_NAME"
+        uri = uri_template.replace("REPLACE_WITH_NAMESPACE", ns).replace(placeholder, name)
+        return await self._make_k8s_request(uri, token, url)
+
+    async def _check_pod_readiness(self, url, token, ns, name) -> Tuple[bool, str]:
+        uri = self.ose_settings.pods_uri.replace("REPLACE_WITH_NAMESPACE", ns)
+        pods = await self._make_k8s_request(uri, token, url)
+        
+        # Check for pods where name is in metadata and status is Ready
+        ready_count = 0
+        for pod in pods.get("items", []):
+            if name in pod["metadata"]["name"]:
+                conditions = pod.get("status", {}).get("conditions", [])
+                if any(c["type"] == "Ready" and c["status"] == "True" for c in conditions):
+                    ready_count += 1
+        
+        return (ready_count > 0, f"Found {ready_count} ready pods" if ready_count > 0 else "No pods are currently ready")
+
+    async def _check_hpa_constraints(self, url, token, ns, name, target) -> Tuple[bool, str]:
+        uri = self.ose_settings.hpa_uri.replace("REPLACE_WITH_NAMESPACE", ns)
+        hpas = await self._make_k8s_request(uri, token, url)
+        for hpa in hpas.get("items", []):
+            ref = hpa["spec"]["scaleTargetRef"]
+            if ref["name"] == name:
+                min_r = hpa["spec"].get("minReplicas", 1)
+                max_r = hpa["spec"].get("maxReplicas", 1)
+                if not (min_r <= target <= max_r):
+                    return False, f"Target {target} is outside HPA range {min_r}-{max_r}"
+        return True, "HPA constraints validated"
+
+    async def _check_pdb_constraints(self, url, token, ns) -> Tuple[bool, str]:
+        uri = self.ose_settings.pdb_uri.replace("REPLACE_WITH_NAMESPACE", ns)
+        pdbs = await self._make_k8s_request(uri, token, url)
+        for pdb in pdbs.get("items", []):
+            if pdb.get("status", {}).get("disruptionsAllowed", 0) == 0:
+                return False, f"PDB {pdb['metadata']['name']} allows no further disruptions"
+        return True, "PDB check passed"
+
+    async def _check_resource_quotas(self, url, token, ns, resource, target, current) -> Tuple[bool, str]:
+        uri = self.ose_settings.resourcequotas_uri.replace("REPLACE_WITH_NAMESPACE", ns)
+        quotas = await self._make_k8s_request(uri, token, url)
+        if not quotas.get("items"): return True, "No quotas found"
+
+        containers = resource["spec"]["template"]["spec"]["containers"]
+        pod_cpu = sum(K8sResourceParser.parse_cpu(c.get("resources", {}).get("requests", {}).get("cpu", 0)) for c in containers)
+        pod_mem = sum(K8sResourceParser.parse_memory(c.get("resources", {}).get("requests", {}).get("memory", 0)) for c in containers)
+        
+        needed_cpu = pod_cpu * (target - current)
+        needed_mem = pod_mem * (target - current)
+
+        for q in quotas["items"]:
+            hard = q["status"].get("hard", {})
+            used = q["status"].get("used", {})
+            
+            if "requests.cpu" in hard:
+                avail = K8sResourceParser.parse_cpu(hard["requests.cpu"]) - K8sResourceParser.parse_cpu(used.get("requests.cpu", 0))
+                if needed_cpu > avail: return False, "Quota: Insufficient CPU"
+            
+            if "requests.memory" in hard:
+                avail = K8sResourceParser.parse_memory(hard["requests.memory"]) - K8sResourceParser.parse_memory(used.get("requests.memory", 0))
+                if needed_mem > avail: return False, "Quota: Insufficient Memory"
+
+        return True, "Quota checks passed"
+
+    async def _check_limit_ranges(self, url, token, ns, resource) -> Tuple[bool, str]:
+        uri = self.ose_settings.limit_ranges_uri.replace("REPLACE_WITH_NAMESPACE", ns)
+        lrs = await self._make_k8s_request(uri, token, url)
+        containers = resource["spec"]["template"]["spec"]["containers"]
+
+        for lr in lrs.get("items", []):
+            for limit in lr["spec"]["limits"]:
+                if limit["type"] == "Container":
+                    max_cpu = K8sResourceParser.parse_cpu(limit.get("max", {}).get("cpu", "999999"))
+                    for c in containers:
+                        if K8sResourceParser.parse_cpu(c.get("resources", {}).get("requests", {}).get("cpu", 0)) > max_cpu:
+                            return False, f"Container {c['name']} exceeds LimitRange max CPU"
+        return True, "LimitRange checks passed"
