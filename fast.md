@@ -1,71 +1,67 @@
-# Technical Decision Document (TDD): Migrating from Flask to FastAPI
+class OSEGuardRailService:
+    RESOURCE_POD_READINESS: str = "Resource Pod Readiness"
+    CURRENT_REPLICAS: str = "Current Replicas Check"
+    PDB_CONSTRAINTS: str = "PDB Constraints Check"
+    HPA_CONSTRAINTS: str = "HPA Constraints Check"
+    RESOURCE_QUOTA: str = "Resource Quota Check"
+    LIMIT_RANGE: str = "Limit Range Check"
+    REPLICA_LIMIT: str = "Replica Limit Check"
 
-**Date:** October 2023
-**Status:** Proposed
-**Audience:** Engineering Leadership, DevOps, and Backend Developers
+    CHECK_NAMES: dict[str, str] = {
+        "RESOURCE_POD_READINESS": RESOURCE_POD_READINESS,
+        "CURRENT_REPLICAS": CURRENT_REPLICAS,
+        "PDB_CONSTRAINTS": PDB_CONSTRAINTS,
+        "HPA_CONSTRAINTS": HPA_CONSTRAINTS,
+        "RESOURCE_QUOTA": RESOURCE_QUOTA,
+        "LIMIT_RANGE": LIMIT_RANGE,
+        "REPLICA_LIMIT": REPLICA_LIMIT,
+    }
 
----
+    def __init__(self,) -> None:
+        """
+        OSEGuardRailService constructor.
+        :return: None
+        :rtype: None
+        """
+        self.ose_settings = environment_settings.ose
+        self.content_type = f"Content-Type: {self.ose_settings.content_type}"
+        self.httpx_client: HTTPXClient = HTTPXClient(
+            ca_certificate_path=self.ose_settings.ca_certificate_path,
+            verify_ssl=self.ose_settings.ssl_verify,
+        )
+    # enddef
 
-## 1. Executive Summary
-This document outlines the strategic migration of our backend services from Flask (WSGI) to FastAPI (ASGI). The goal is to modernize our infrastructure to support higher concurrency, reduce memory-related crashes, and automate API documentation and data validation.
+    @classmethod
+    async def get_service(cls,) -> Self:
+        """
+        Factory method to create an instance of OSEGuardRailService.
+        :return: An instance of OSEGuardRailService.
+        :rtype: OSEGuardRailService
+        """
+        return cls()
+    # endAsyncDef
 
----
+    async def get_scale_settings(self,) -> ScaleSettingsModel:
+        """
+        Get scale settings from database with fallback to defaults.
+        :return: Scale settings model with configured limits and enforcement flags.
+        :rtype: ScaleSettingsModel
+        """
+        try:
+            db_settings = await self.settings_service.get_db_settings(
+                environment=OSE_ENVIRONMENT,
+            )
+            if isinstance(db_settings, str) or db_settings is None:
+                logger.warning(
+                    f"Could not fetch DB settings for {OSE_ENVIRONMENT}, using defaults"
+                )
+                return ScaleSettingsModel()
 
-## 2. Core Architecture: WSGI vs. ASGI
-
-To understand why we are migrating, we must look at how the server handles traffic.
-
-### 2.1 WSGI (Web Server Gateway Interface) - *The Flask Model*
-*   **Synchronous:** WSGI handles requests one by one per thread. 
-*   **The "Waiter" Analogy:** Imagine a restaurant with 10 waiters (threads). If a waiter takes an order and the kitchen takes 5 minutes to cook, that waiter stands still at the kitchen window for 5 minutes. They cannot serve any other customers until the food is ready.
-*   **The Bottleneck:** Our current `-w 2 --threads 10` setup means we can only handle **20 simultaneous "waits."** If the 21st user arrives, they must wait for a thread to become free.
-
-### 2.2 ASGI (Asynchronous Server Gateway Interface) - *The FastAPI Model*
-*   **Asynchronous:** Built on Python's `asyncio`. It uses an **Event Loop**.
-*   **The "Efficient Waiter" Analogy:** In an ASGI restaurant, the waiter takes an order, hands it to the kitchen, and **immediately** goes to serve another table while the food cooks. When the kitchen "pings" the waiter, they return to the first table.
-*   **The Advantage:** A single FastAPI worker can handle **thousands** of concurrent connections because it never sits idle while waiting for a database or an external API to respond.
-
----
-
-## 3. Comparison of Frameworks
-
-| Feature | Flask (WSGI) | FastAPI (ASGI) |
-| :--- | :--- | :--- |
-| **Concurrency** | One request per thread | Hundreds of requests per worker |
-| **Data Validation** | Manual (Risk of `KeyError`) | Automatic (via Pydantic) |
-| **Documentation** | Manual / Third-party | Native / Automatic (OpenAPI) |
-| **Performance** | Medium | High (Comparable to Go/Node.js) |
-| **Development** | Faster to start, harder to scale | Slower initial setup, easier to maintain |
-
----
-
-## 4. Technical Advantages
-
-### 4.1 Native Data Validation (Pydantic)
-In Flask, we manually parse `request.json`. In FastAPI, we define a **Schema**. 
-*   **The Benefit:** FastAPI validates data types **before** the code runs. If a client sends a string where an integer is expected, FastAPI automatically rejects it with a clear error message, preventing application crashes.
-
-### 4.2 Auto-Generated Interactive Documentation
-FastAPI automatically generates an interactive **Swagger UI** at `/docs`.
-*   **The Benefit:** We no longer need to manually update Postman collections or Wiki pages. Stakeholders and Frontend developers can test API endpoints directly in the browser with real-time documentation.
-
----
-
-## 5. Proposed Infrastructure (Production Grade)
-
-We will transition from a standard Uvicorn execution to a Gunicorn-managed process. This provides the "Process Management" of Gunicorn with the "Async Speed" of Uvicorn.
-
-**Target Command:**
-```bash
-gunicorn src.apis.main:fapis_application \
-  --bind 0.0.0.0:8000 \
-  --worker-class uvicorn.workers.UvicornWorker \
-  --workers 2 \
-  --timeout 300 \
-  --keepalive 2 \
-  --max-requests 1000 \
-  --max-requests-jitter 50 \
-  --keyfile /tmp/server.key \
-  --certfile /tmp/server.crt \
-  --access-logfile - \
-  --error-logfile -
+            return db_settings
+        except Exception as generic_exception:
+            logger.warning(
+                f"Error fetching scale settings: {generic_exception}, using defaults"
+            )
+            return ScaleSettingsModel()
+    # endTryExcept
+# endAsyncDef
