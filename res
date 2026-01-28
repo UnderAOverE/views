@@ -98,13 +98,3 @@ async def get_audit_logs(request: Request):
 async def get_status():
     """This route is NOT rate limited."""
     return {"status": "online"}
-
-
-
-
-def get_user_specific_limit(request: Request) -> str:
-    user_id = request.headers.get("X-User")
-    # You could check a dictionary of user-specific tiers here
-    if user_id in PREMIUM_USERS:
-        return "100/minute"
-    return DYNAMIC_LIMITS["default"]
