@@ -1,68 +1,110 @@
-async def _stream_and_extract_ids(
-    self, 
-    stream, 
-    field_name: str, 
-    caller: str, 
-    unique_ids: set[str]
-) -> None:
-    """
-    Generic helper to iterate over async batches of Pydantic models.
-    """
-    batch_idx = 0
-    try:
-        async for batch in stream:
-            batch_idx += 1
-            try:
-                for model in batch:
-                    # Access the Pydantic field dynamically
-                    value = getattr(model, field_name, None)
+import asyncio
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
+from motor.motor_asyncio import AsyncIOMotorClient
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
-                    if isinstance(value, str):
-                        # Split by comma, strip whitespace, and filter out empty strings
-                        # update() adds multiple items to a set at once
-                        unique_ids.update(
-                            part.strip() for part in value.split(",") if part.strip()
-                        )
-                
-                print(f"{caller} processed batch {batch_idx} ({len(batch)} docs)")
+# --- 1. CONFIGURATION & GLOBALS ---
+MONGO_URI = "mongodb://localhost:27017"
+DB_NAME = "audit_service_db"
+
+# This dictionary acts as our local "Cache" for limits stored in Mongo.
+# We initialize it with hardcoded defaults in case Mongo is unreachable.
+DYNAMIC_LIMITS = {
+    "audit_api": "5/minute",
+    "default": "100/hour"
+}
+
+# --- 2. LIMITER SETUP ---
+# storage_uri: Where slowapi stores the "hits" (the counters).
+# This uses the synchronous pymongo driver internally.
+limiter = Limiter(
+    key_func=get_remote_address,
+    storage_uri=f"{MONGO_URI}/{DB_NAME}?authSource=admin"
+)
+
+# This function is passed to the decorator. It is called on every request.
+# Because it reads from a local dict, it is extremely fast (nanoseconds).
+def get_current_audit_limit(request: Request) -> str:
+    return DYNAMIC_LIMITS.get("audit_api", "5/minute")
+
+# --- 3. BACKGROUND SYNC TASK ---
+async def sync_limits_from_db(app: FastAPI):
+    """
+    Periodically pulls the rate limit configuration from MongoDB 
+    and updates the local DYNAMIC_LIMITS dictionary.
+    """
+    while True:
+        try:
+            db = app.state.db
+            # We look for a document that stores our app settings
+            config = await db["settings"].find_one({"key": "rate_limit_config"})
             
-            except Exception as e:
-                print(f"{caller} error in batch {batch_idx}: {e}")
-                continue  # Keep going with next batch
-    except Exception as e:
-        print(f"{caller} critical streaming error: {e}")
+            if config:
+                DYNAMIC_LIMITS["audit_api"] = config.get("audit_api", "5/minute")
+                DYNAMIC_LIMITS["default"] = config.get("default", "100/hour")
+                # print(f"Synced limits from Mongo: {DYNAMIC_LIMITS}")
+        except Exception as e:
+            print(f"Error syncing limits from MongoDB: {e}")
+        
+        # Check for updates every 60 seconds
+        await asyncio.sleep(60)
+
+# --- 4. LIFESPAN MANAGEMENT ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # STARTUP: Initialize Async Mongo Client (Motor)
+    app.state.mongo_client = AsyncIOMotorClient(MONGO_URI)
+    app.state.db = app.state.mongo_client[DB_NAME]
+    
+    # Start the background configuration sync task
+    sync_task = asyncio.create_task(sync_limits_from_db(app))
+    
+    print("API Started: Mongo Connected & Limit Sync Task running.")
+    yield
+    
+    # SHUTDOWN: Clean up
+    sync_task.cancel()
+    app.state.mongo_client.close()
+    print("API Stopped: Connections closed.")
+
+# --- 5. APP INITIALIZATION ---
+app = FastAPI(lifespan=lifespan)
+
+# Attach the limiter to the app state
+app.state.limiter = limiter
+
+# Correct Exception Handler: Handle RateLimitExceeded errors
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# --- 6. ROUTES ---
+
+@app.get("/api/v1/audit")
+@limiter.limit(get_current_audit_limit)  # Uses the dynamic function
+async def get_audit_logs(request: Request):
+    """
+    This route is rate-limited based on the string stored in MongoDB.
+    If you change the 'audit_api' field in the 'settings' collection,
+    this route will update its limit automatically within 60 seconds.
+    """
+    return {
+        "status": "success",
+        "applied_limit": DYNAMIC_LIMITS["audit_api"]
+    }
+
+@app.get("/api/v1/status")
+async def get_status():
+    """This route is NOT rate limited."""
+    return {"status": "online"}
 
 
-async def extract_csi_inv_ci_names(self, service_names: list[str]) -> list[str] | None:
-    unique_ids: set[str] = set()
-    repo = self.drift_csi_inv_repository
-
-    # We call the helper twice for the two different search types
-    await self._stream_and_extract_ids(
-        stream=repo.find_csi_by_service_name_regex(service_names),
-        field_name="CSI",
-        caller="csi_inv_by_name",
-        unique_ids=unique_ids
-    )
-
-    await self._stream_and_extract_ids(
-        stream=repo.find_csi_by_service_offering_name_regex(service_names),
-        field_name="CSI",
-        caller="csi_inv_by_offering",
-        unique_ids=unique_ids
-    )
-
-    return list(unique_ids) if unique_ids else None
 
 
-async def extract_cmdb_ci_names(self, device_names: list[str]) -> list[str] | None:
-    unique_ids: set[str] = set()
-
-    await self._stream_and_extract_ids(
-        stream=self.drift_cmdb_repository.find_csi_by_device_names(device_names),
-        field_name="ApplicationIds", # Different field name for this model
-        caller="cmdb_ci_names",
-        unique_ids=unique_ids
-    )
-
-    return list(unique_ids) if unique_ids else None
+def get_user_specific_limit(request: Request) -> str:
+    user_id = request.headers.get("X-User")
+    # You could check a dictionary of user-specific tiers here
+    if user_id in PREMIUM_USERS:
+        return "100/minute"
+    return DYNAMIC_LIMITS["default"]
