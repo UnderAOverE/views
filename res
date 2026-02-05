@@ -1,66 +1,37 @@
-# For start operations, determine target replicas
-if lifecycle_request.replicas is not None:
-    # User provided replicas, but check MongoDB first for last successful stop
-    try:
-        stop_record = await self.audit_service.get_last_successful_stop_operation_by_client(client)
+# 1. Attempt to fetch the record once
+try:
+    stop_record = await self.audit_service.get_last_successful_stop_operation_by_client(client)
+except Exception as e:
+    logger.warning(f"Failed to lookup MongoDB stop record: {str(e)}")
+    stop_record = None
 
-        if stop_record and hasattr(stop_record, "details") and hasattr(stop_record.details, "replicas_before"):
-            if (
-                stop_record.object_name != lifecycle_request.object_name
-                and stop_record.namespace != lifecycle_request.namespace
-                and stop_record.cluster_name != lifecycle_request.cluster_name
-            ):
-                logger.warning(
-                    "No MongoDB stop record found that matches the current operation context. "
-                    "Ignoring MongoDB record and using payload replicas."
-                )
-                target_replicas = int(lifecycle_request.replicas)
-                operation_messages.append(
-                    f"No MongoDB stop record found that matches the current operation context, "
-                    f"using payload replicas: target replicas = {target_replicas}"
-                )
-            else:
-                target_replicas = int(stop_record.details.replicas_before)
-                operation_messages.append(
-                    f"Using MongoDB record: target replicas = {target_replicas}"
-                )
-        else:
-            target_replicas = int(lifecycle_request.replicas)
-            operation_messages.append(
-                f"Using payload replicas: target replicas = {target_replicas}"
-            )
+# 2. Check if the record is a valid match for this specific request context
+is_valid_match = False
+if stop_record and hasattr(stop_record, "details") and hasattr(stop_record.details, "replicas_before"):
+    is_valid_match = (
+        stop_record.object_name == lifecycle_request.object_name and
+        stop_record.namespace == lifecycle_request.namespace and
+        stop_record.cluster_name == lifecycle_request.cluster_name
+    )
 
-    except Exception as mongo_exception:
-        logger.warning(f"Failed to lookup MongoDB stop record: {str(mongo_exception)}")
-        target_replicas = int(lifecycle_request.replicas)
-        operation_messages.append(
-            f"MongoDB lookup failed, using payload replicas: target replicas = {target_replicas}"
-        )
+# 3. Determine target replicas (Priority: DB Match > Payload > Error)
+if is_valid_match:
+    target_replicas = int(stop_record.details.replicas_before)
+    operation_messages.append(f"Using MongoDB record: target replicas = {target_replicas}")
+
+elif lifecycle_request.replicas is not None:
+    # If there was a record but it didn't match, log the warning
+    if stop_record:
+        logger.warning("MongoDB record found but context mismatch. Using payload replicas.")
+    
+    target_replicas = int(lifecycle_request.replicas)
+    operation_messages.append(f"Using payload replicas: target replicas = {target_replicas}")
 
 else:
-    # No replicas provided, must use MongoDB lookup
-    stop_record = await self.audit_service.get_last_successful_stop_operation_by_client(client)
-
-    if stop_record and hasattr(stop_record, "details") and hasattr(stop_record.details, "replicas_before"):
-        if (
-            stop_record.object_name != lifecycle_request.object_name
-            and stop_record.namespace != lifecycle_request.namespace
-            and stop_record.cluster_name != lifecycle_request.cluster_name
-        ):
-            logger.warning(
-                "No MongoDB stop record found that matches the current operation context. "
-                "Cannot determine target replicas for start operation."
-            )
-            raise ValueError(
-                "No replicas specified in payload and no MongoDB record found that matches "
-                "the current operation context to determine target replicas for start operation."
-            )
-
-        target_replicas = int(stop_record.details.replicas_before)
-        operation_messages.append(
-            f"Using MongoDB record: target replicas = {target_replicas}"
-        )
-    else:
-        raise ValueError(
-            "No replicas specified in payload and no previous stop operation found in database"
-        )
+    # No valid DB record AND no payload replicas provided
+    error_msg = (
+        "No replicas specified in payload and no matching MongoDB stop record "
+        "found to determine target replicas."
+    )
+    logger.error(error_msg)
+    raise ValueError(error_msg)
