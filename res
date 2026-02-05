@@ -1,54 +1,66 @@
-==================================== ERRORS ====================================
-____________ ERROR collecting tests/apis/main_test.py ____________
-ImportError while importing test module '/workspace/source/tests/apis/main_test.py'.
-Hint: make sure your test modules/packages have valid Python names.
-Traceback:
-/usr/lib64/python3.12/importlib/__init__.py:90: in import_module
-    return _bootstrap._gcd_import(name[level:], package, level)
-tests/apis/main_test.py:46: in <module>
-    from src.apis.main import fapis_application
-src/apis/main.py:58: in <module>
-    from src.apis.initializer import lifespan
-src/apis/initializer.py:61: in <module>
-    from src.apis.services.ose.audits import OSEAuditService
-src/apis/services/ose/audits.py:53: in <module>
-    from src.apis.models.audits import (
-src/apis/models/audits.py:62: in <module>
-    from src.common.miscellaneous.utils import sanitize_payload_recursive
-E   ModuleNotFoundError: No module named 'src.common.miscellaneous'
+# For start operations, determine target replicas
+if lifecycle_request.replicas is not None:
+    # User provided replicas, but check MongoDB first for last successful stop
+    try:
+        stop_record = await self.audit_service.get_last_successful_stop_operation_by_client(client)
 
+        if stop_record and hasattr(stop_record, "details") and hasattr(stop_record.details, "replicas_before"):
+            if (
+                stop_record.object_name != lifecycle_request.object_name
+                and stop_record.namespace != lifecycle_request.namespace
+                and stop_record.cluster_name != lifecycle_request.cluster_name
+            ):
+                logger.warning(
+                    "No MongoDB stop record found that matches the current operation context. "
+                    "Ignoring MongoDB record and using payload replicas."
+                )
+                target_replicas = int(lifecycle_request.replicas)
+                operation_messages.append(
+                    f"No MongoDB stop record found that matches the current operation context, "
+                    f"using payload replicas: target replicas = {target_replicas}"
+                )
+            else:
+                target_replicas = int(stop_record.details.replicas_before)
+                operation_messages.append(
+                    f"Using MongoDB record: target replicas = {target_replicas}"
+                )
+        else:
+            target_replicas = int(lifecycle_request.replicas)
+            operation_messages.append(
+                f"Using payload replicas: target replicas = {target_replicas}"
+            )
 
-________ ERROR collecting tests/apis/routes/ose/bulk_restarts_test.py _________
-ImportError while importing test module
-'/workspace/source/tests/apis/routes/ose/bulk_restarts_test.py'.
-Hint: make sure your test modules/packages have valid Python names.
-Traceback:
-/usr/lib64/python3.12/importlib/__init__.py:90: in import_module
-    return _bootstrap._gcd_import(name[level:], package, level)
-tests/apis/routes/ose/bulk_restarts_test.py:19: in <module>
-    from src.apis.routes.ose.bulk_restarts import bulk_restart_resources
-src/apis/routes/__init__.py:5: in <module>
-    from .management import router as management_router
-src/apis/routes/management.py:56: in <module>
-    from src.apis.dependencies import get_management_key
-src/apis/dependencies/__init__.py:24: in <module>
-    from .auth import (
-src/apis/dependencies/auth.py:43: in <module>
-    from .core import get_settings_from_db
-src/apis/dependencies/core.py:37: in <module>
-    from src.apis.initializer import TaskManager
-src/apis/initializer.py:61: in <module>
-    from src.apis.services.ose.audits import OSEAuditService
-src/apis/services/ose/audits.py:53: in <module>
-    from src.apis.models.audits import (
-src/apis/models/audits.py:62: in <module>
-    from src.common.miscellaneous.utils import sanitize_payload_recursive
-E   ModuleNotFoundError: No module named 'src.common.miscellaneous'
+    except Exception as mongo_exception:
+        logger.warning(f"Failed to lookup MongoDB stop record: {str(mongo_exception)}")
+        target_replicas = int(lifecycle_request.replicas)
+        operation_messages.append(
+            f"MongoDB lookup failed, using payload replicas: target replicas = {target_replicas}"
+        )
 
+else:
+    # No replicas provided, must use MongoDB lookup
+    stop_record = await self.audit_service.get_last_successful_stop_operation_by_client(client)
 
-=========================== short test summary info ============================
-ERROR tests/apis/initializer_test.py
-ERROR tests/apis/main_test.py
-ERROR tests/apis/routes/ose/bulk_restarts_test.py
-!!!!!!!!!!!!!!!!!!! Interrupted: 3 errors during collection !!!!!!!!!!!!!!!!!!!
-3 errors in 1.96s
+    if stop_record and hasattr(stop_record, "details") and hasattr(stop_record.details, "replicas_before"):
+        if (
+            stop_record.object_name != lifecycle_request.object_name
+            and stop_record.namespace != lifecycle_request.namespace
+            and stop_record.cluster_name != lifecycle_request.cluster_name
+        ):
+            logger.warning(
+                "No MongoDB stop record found that matches the current operation context. "
+                "Cannot determine target replicas for start operation."
+            )
+            raise ValueError(
+                "No replicas specified in payload and no MongoDB record found that matches "
+                "the current operation context to determine target replicas for start operation."
+            )
+
+        target_replicas = int(stop_record.details.replicas_before)
+        operation_messages.append(
+            f"Using MongoDB record: target replicas = {target_replicas}"
+        )
+    else:
+        raise ValueError(
+            "No replicas specified in payload and no previous stop operation found in database"
+        )
