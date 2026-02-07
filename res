@@ -156,3 +156,99 @@ class ClusterProcessor:
 if __name__ == "__main__":
     if len(sys.argv) < 3: sys.exit("Usage: python Clusters.py <env> <sector>")
     asyncio.run(ClusterProcessor(sys.argv[2], sys.argv[1]).run())
+
+
+
+
+# --- Additional Settings ---
+MAX_CLUSTERS_ALLOWED = 200
+ALERT_THRESHOLDS = {
+    "job_duration_total_sec": 300,  # Alert if job takes > 5 mins
+    "cluster_duration_sec": 15,     # Alert if any single cluster takes > 15s
+    "failure_percent_limit": 10      # Alert if > 10% of clusters fail
+}
+
+class ClusterProcessor:
+    def __init__(self, sector: str, batch_env: str):
+        # ... existing init ...
+        self.cluster_timings = []
+        self.failures = [] # List of dicts: {"cluster": name, "error": str, "duration": float}
+        self.start_time = None
+
+    async def process_cluster(self, name: str, meta: Dict, mapping: Dict, fid_pass: str):
+        async with self.semaphore:
+            c_start = time.perf_counter()
+            try:
+                # ... API Logic ...
+                duration = round(time.perf_counter() - c_start, 3)
+                
+                res = {
+                    "cluster_name": name,
+                    "processing_duration_sec": duration,
+                    "logdate": datetime.now(timezone.utc).isoformat()
+                }
+                self.cluster_timings.append({"name": name, "duration": duration})
+
+                async with self.buffer_lock:
+                    self.results_buffer.append(res)
+                await self.flush_buffer()
+
+            except Exception as e:
+                duration = round(time.perf_counter() - c_start, 3)
+                self.failures.append({"cluster": name, "error": str(e), "duration": duration})
+                logger.error(f"❌ {name} failed after {duration}s")
+
+    async def run(self):
+        self.start_time = time.perf_counter()
+        
+        # 1. Load Metadata & Guardrail
+        meta = await self.db.Metadata.find_one({"sector": self.sector, "active": True})
+        cluster_list = meta.get("get_clusters", {}).get("manual", [])
+
+        if len(cluster_list) > MAX_CLUSTERS_ALLOWED:
+            await self.send_alert_email(
+                "CRITICAL: Capacity Exceeded", 
+                f"Sector {self.sector} has {len(cluster_list)} clusters. Limit is {MAX_CLUSTERS_ALLOWED}."
+            )
+            return
+
+        # 2. Execution
+        async with asyncio.TaskGroup() as tg:
+            for name in cluster_list:
+                tg.create_task(self.process_cluster(name, meta, {}, "fid_pass_here"))
+
+        await self.flush_buffer(force=True)
+        
+        # 3. Final Evaluation & Single Alert
+        total_time = time.perf_counter() - self.start_time
+        await self.evaluate_and_alert(total_time, len(cluster_list))
+
+    async def evaluate_and_alert(self, total_time, total_count):
+        alerts = []
+        
+        # Condition: Overall Time
+        if total_time > ALERT_THRESHOLDS["job_duration_total_sec"]:
+            alerts.append(f"⚠️ Job exceeded time limit: {total_time:.2f}s (Limit: {ALERT_THRESHOLDS['job_duration_total_sec']}s)")
+
+        # Condition: Failures
+        fail_rate = (len(self.failures) / total_count) * 100 if total_count > 0 else 0
+        if self.failures:
+            alerts.append(f"❌ Failures detected: {len(self.failures)}/{total_count} ({fail_rate:.1f}%)")
+        
+        # Condition: Individual Slow Clusters
+        slow_clusters = [c for c in self.cluster_timings if c['duration'] > ALERT_THRESHOLDS["cluster_duration_sec"]]
+        if slow_clusters:
+            alerts.append(f"🐢 {len(slow_clusters)} clusters were slower than {ALERT_THRESHOLDS['cluster_duration_sec']}s")
+
+        # If any issues found, send ONE email
+        if alerts:
+            subject = f"Alert Summary: {self.sector} ({'CRITICAL' if fail_rate > 20 else 'Warning'})"
+            content = "The following issues were detected during the cluster refresh:\n\n"
+            content += "\n".join(f"- {a}" for a in alerts)
+            
+            if self.failures:
+                content += "\n\nFailure Details:\n" + "\n".join([f"{f['cluster']}: {f['error']}" for f in self.failures])
+            
+            content += f"\n\nTotal Processing Time: {total_time:.2f}s"
+            await self.send_alert_email(subject, content)
+            logger.info("📧 Consolidated alert email sent.")
