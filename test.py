@@ -1,3 +1,25 @@
+// Primary aggregation index
+db.Certificates.createIndex({ 
+    "log_date": -1, 
+    "days_to_expiration": 1, 
+    "source_properties.microservice_name": 1,
+    "status": 1 
+}, { name: "idx_expiring_certs_lookup" });
+
+// Healthy cert lookup index (for the cache builder)
+db.Certificates.createIndex({ 
+    "source_properties.microservice_name": 1, 
+    "days_to_expiration": 1 
+}, { name: "idx_ms_healthy_certs" });
+
+
+// Unique shard key / lookup key
+db.ExpiringServiceAlerts.createIndex({ 
+    "cluster_name": 1, 
+    "namespace": 1, 
+    "object_name": 1 
+}, { unique: true, name: "idx_unique_service" });
+
 """
 Technical Design Document: Certificate Expiration & Renewal Engine
 Project Name: Automated Prod-Service Certificate Watcher
