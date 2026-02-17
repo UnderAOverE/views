@@ -1,5 +1,46 @@
 from rapidfuzz import fuzz
 
+def is_similar_dn(dn1, dn2, threshold=80):
+    """
+    Cleans DN strings, removes noise, and returns True if similarity 
+    score is above the threshold.
+    """
+    # 1. Define noise words to ignore
+    # Added common SSL/Domain noise: 'prod', 'ssl', 'renewed', 'old', '.com', etc.
+    noise = ["dn=", "cn=", "prod", "ssl", "renewed", ".com", ".net", ".org", "old", "version"]
+
+    def clean_string(text):
+        text = text.lower()
+        for word in noise:
+            text = text.replace(word, "")
+        # Replace punctuation with spaces to help Token matching
+        text = text.replace(".", " ").replace("-", " ").replace("_", " ")
+        return text.strip()
+
+    # 2. Pre-process both strings
+    s1 = clean_string(dn1)
+    s2 = clean_string(dn2)
+
+    # 3. Calculate both ratios
+    partial_score = fuzz.partial_ratio(s1, s2)
+    token_score = fuzz.token_set_ratio(s1, s2)
+
+    # 4. Compare the MAX against the threshold and return Boolean
+    best_score = max(partial_score, token_score)
+    
+    return best_score >= threshold
+
+# --- Quick Test ---
+# Case 1 (Substring): True (Partial Ratio will be high)
+# Case 2 (Domain/Renewed): True (Token Set Ratio will be high)
+print(is_similar_dn("DN= CRSFSCV", "DN=126743crsfscvprodssl")) # True
+print(is_similar_dn("Dn=prod.cyberark.com", "DN=prod.renewedcyberark.net")) # True
+print(is_similar_dn("CN=ServiceAlpha", "CN=SomethingEntirelyDifferent")) # False
+
+
+
+from rapidfuzz import fuzz
+
 def compare_dn_values(dn1, dn2):
     # 1. Clean the strings (remove 'DN=' and lowercase everything)
     s1 = dn1.lower().replace("dn=", "").strip()
