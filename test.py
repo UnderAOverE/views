@@ -1,3 +1,143 @@
+# ==============================================================================
+# TECHNICAL DESIGN DOCUMENT (TDD): PROD CERTIFICATE ANALYSIS ENGINE v2.0
+# ==============================================================================
+
+1. PROJECT OVERVIEW
+------------------
+The Production Certificate Expiration & Renewal Analysis Engine is an enterprise-grade
+asynchronous batch system. It is designed to audit a source repository containing 
+5 million+ certificate records to identify imminent risks in Production environments. 
+The system distinguishes itself by using fuzzy-logic to filter out renewed 
+certificates and real-time API checks to verify the existence of the hosting 
+infrastructure (Deployments/StatefulSets).
+
+2. SYSTEM ARCHITECTURE
+----------------------
+2.1 TECHNOLOGY STACK
+    - Language: Python 3.10+ (AsyncIO)
+    - Database Driver: Motor (Official MongoDB Async Driver)
+    - Source DB: MongoDB (5 Million+ Documents)
+    - HTTP Client: Custom Async Client (based on httpx)
+    - Comparison: difflib (Gestalt Pattern Matching)
+    - Email: aiosmtplib (MIME HTML support)
+
+2.2 CORE COMPONENTS
+    - Ingestion Module: Handles high-volume MongoDB aggregation.
+    - Healthy Cache Builder: In-memory lookup table for valid cert strings.
+    - OSE Status Module: Sequential API fallback (Deployment -> StatefulSet).
+    - Analysis Logic: Similarity scoring and alert prioritization.
+    - Reporting Engine: Dynamic HTML generator with color-coded triage.
+
+3. DATABASE STRATEGY & PERFORMANCE
+----------------------------------
+3.1 THE "ESR" INDEXING RULE (Equality, Sort, Range)
+    To manage 5 million records without triggering 10-second socket timeouts, 
+    the system utilizes a specific compound index structure. By placing 
+    Equality filters first, the database engine avoids scanning irrelevant data.
+
+    Required Index:
+    { 
+        "source_properties.environment": 1,   // Equality
+        "status": 1,                          // Equality
+        "log_date": -1,                       // Range (Sort)
+        "days_to_expiration": 1,              // Range
+        "source_properties.microservice_name": 1 
+    }
+
+3.2 AGGREGATION PIPELINE
+    The system offloads the primary heavy-lifting to the MongoDB engine:
+    - Match: Filters Log Date >= 90 days, Environment IN [PROD], Days <= 7.
+    - Group: Aggregates certificates by their microservice_name string to reduce 
+             duplicate processing of the same service.
+
+4. DATA PROCESSING LOGIC
+------------------------
+4.1 MICROSERVICE PARSING
+    Source strings follow the pattern: cluster_namespace_objectname. 
+    The engine splits these strings and validates the content to ensure 
+    downstream OSE API calls are accurate.
+
+4.2 HEALTHY CACHE-ASIDE PATTERN
+    To avoid "N+1" database queries, the system fetches all valid certificates 
+    for the impacted microservices in a single query.
+    - Guardrail: Limits cache to 5 certs per MS to prevent memory overflow.
+    - Efficiency: All string comparisons happen in local CPU cache (RAM).
+
+4.3 FUZZY RENEWAL DETECTION
+    Algorithm: SequenceMatcher (85% similarity threshold).
+    Logic: If a certificate is expiring, but a "Healthy" cert with a nearly 
+    identical Distinguished Name (DN) exists in the same microservice, the 
+    alert is downgraded to "Renewed."
+
+4.4 OSE API FALLBACK STRATEGY
+    Since the object type is not explicitly defined in the source, the system 
+    implements a sequential probe:
+    - Step 1: Query Deployment Status API.
+    - Step 2: If result is "unknown", query StatefulSet Status API.
+    - Result: If both fail, the service is flagged as "MISSING SERVICE."
+
+5. SCALABILITY & MEMORY MANAGEMENT
+----------------------------------
+5.1 ASYNCHRONOUS CONCURRENCY
+    Unlike standard scripts, this engine uses a non-blocking event loop. 
+    While waiting for a response from the OSE APIs, the engine continues 
+    calculating similarity scores or processing the next database document.
+
+5.2 STREAMING VS MATERIALIZATION
+    The engine utilizes "async for" cursors instead of ".to_list()". 
+    This ensures that 5 million records are never loaded into RAM at once; 
+    only the current processing window is held in memory.
+
+6. NOTIFICATION & TRIAGE LOGIC
+------------------------------
+6.1 DYNAMIC HTML GENERATION
+    The email summary uses professional inline CSS to ensure compatibility 
+    across Outlook and mobile clients.
+
+6.2 COLOR-CODED TRIAGE
+    - BLUE (MISSING SERVICE): The certificate is logged, but the service 
+      cannot be found in OSE. High priority for cleanup/decommissioning.
+    - RED (ACTION REQ): The certificate is expiring, and NO renewal was 
+      detected. Immediate manual intervention required.
+    - GREEN (RENEWED): Expiring cert found, but a replacement is already live.
+
+6.3 ERROR REPORTING
+    A global try-except wrapper catches any critical faults (DB timeouts, 
+    API auth errors). It dispatches an immediate email containing the full 
+    Python traceback to ensure zero-downtime batch monitoring.
+
+7. TARGET DATA MODEL
+--------------------
+Collection: ExpiringServiceAlerts
+Schema:
+{
+    "cluster_name": String,
+    "namespace": String,
+    "object_name": String,
+    "csi_id": Integer,
+    "replicas": { "available": Int, "total": Int },
+    "certificates": [
+        {
+            "distinguished_name": String,
+            "days_to_expiration": Int,
+            "renewal_status": {
+                "likely_renewed": Boolean,
+                "attention_required": Boolean
+            }
+        }
+    ],
+    "log_datetime": DateTime
+}
+
+8. OPERATIONAL SUMMARY
+----------------------
+This design ensures that 5,000,000 records are analyzed with high precision. 
+The combination of ESR-indexed queries, RAM-based caching, and async OSE 
+status checks results in a system that is robust, memory-efficient, and 
+highly actionable for support teams.
+# ==============================================================================
+
+
 async def send_summary_email(self, status: str, data: Any) -> None:
     # ... (header logic remains the same) ...
 
