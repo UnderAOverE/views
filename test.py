@@ -1,3 +1,50 @@
+async def send_summary_email(self, status: str, data: Any) -> None:
+    # ... (header logic remains the same) ...
+
+    # Sort data: Missing/Action Req at the top, Renewed at the bottom
+    # We use a custom sort key: 2 for Missing, 1 for Action Req, 0 for Renewed
+    def get_sort_priority(item):
+        if item['replica_str'] == "unknown/unknown": return 2
+        if item['needs_attention']: return 1
+        return 0
+
+    sorted_data = sorted(data, key=get_sort_priority, reverse=True)
+
+    for item in sorted_data:
+        # --- NEW LOGIC FOR STATUS LABELS ---
+        if item['replica_str'] == "unknown/unknown":
+            # State 1: API could not find the service in OSE
+            status_label = "<b style='color: #0056b3;'>MISSING SERVICE</b>"
+            row_bg = "#eef7ff"  # Light blue background for the row
+        elif item['needs_attention']:
+            # State 2: Service exists but cert is expiring with no renewal found
+            status_label = "<b style='color: #d9534f;'>ACTION REQ</b>"
+            row_bg = "#fff3f3"  # Light red background for the row
+        else:
+            # State 3: Service exists and a renewal was detected
+            status_label = "<span style='color: #28a745;'>Renewed</span>"
+            row_bg = "#ffffff"  # White background
+
+        html += f"""
+        <tr style="background-color: {row_bg};">
+            <td style="padding: 8px; border: 1px solid #ddd;">
+                {item['cluster']} / {item['ns']} / {item['obj']}
+            </td>
+            <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">
+                {item['replica_str']}
+            </td>
+            <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">
+                {item['cert_count']}
+            </td>
+            <td style="padding: 8px; border: 1px solid #ddd; text-align: center;">
+                {status_label}
+            </td>
+        </tr>
+        """
+    
+    # ... (footer logic) ...
+
+
 // Primary aggregation index
 db.Certificates.createIndex({ 
     "log_date": -1, 
