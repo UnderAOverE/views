@@ -1,4 +1,116 @@
 async def send_summary_email(self, status: str, data: List[Dict[str, Any]]) -> None:
+    # ... (failure check remains the same) ...
+
+    html = """
+    <html>
+    <head>
+        <style>
+            table { border-collapse: collapse; width: 100%; font-family: sans-serif; font-size: 13px; }
+            
+            /* Center and Middle align every cell */
+            th, td { 
+                border: 1px solid #ddd; 
+                text-align: center; 
+                vertical-align: middle; 
+                padding: 0; /* Important: remove padding to make internal borders flush */
+            }
+
+            th { background-color: #f2f2f2; padding: 10px; }
+            
+            /* Standard padding for non-cert columns */
+            .std-padding { padding: 10px; }
+
+            /* Container for each certificate to create clean borders */
+            .cert-container {
+                text-align: left; /* Keep DNs left-aligned for readability */
+                padding: 10px;
+                border-bottom: 1px solid #ddd; /* This replaces the HR */
+            }
+            
+            /* Remove the border from the very last certificate in the cell */
+            .cert-container:last-child { border-bottom: none; }
+
+            .renewed-box { 
+                background: #f0fff4; 
+                border: 1px dashed #28a745; 
+                padding: 8px; 
+                margin-top: 5px; 
+                font-size: 11px; 
+            }
+            .serial { font-family: monospace; color: #666; font-size: 11px; }
+            .badge { 
+                padding: 2px 5px; 
+                border-radius: 3px; 
+                font-weight: bold; 
+                font-size: 10px; 
+                background:#d4edda; 
+                color:#155724; 
+                display: inline-block;
+                margin-bottom: 4px;
+            }
+        </style>
+    </head>
+    <body>
+        <h2>Production Certificate Renewal Report</h2>
+        <table>
+            <tr>
+                <th style="width: 25%;">Service (Cluster/NS/Obj)</th>
+                <th style="width: 10%;">Replicas</th>
+                <th style="width: 50%;">Certificate Details & Renewal Match</th>
+                <th style="width: 15%;">Status</th>
+            </tr>
+    """
+
+    # ... (Sorting logic remains the same) ...
+
+    for item in sorted_data:
+        priority = get_sort_priority(item)
+        replica_str = f"{item['replicas'].get('available', 0)} / {item['replicas'].get('total', 0)}"
+        
+        row_bg = "#ffffff"
+        status_label = "<span style='color: #28a745;'>All Renewed</span>"
+        if priority == 2:
+            status_label = "<b style='color: #0056b3;'>MISSING SERVICE</b>"
+            row_bg = "#eef7ff"
+        elif priority == 1:
+            status_label = "<b style='color: #d9534f;'>ACTION REQ</b>"
+            row_bg = "#fff3f3"
+
+        html += f"<tr style='background-color: {row_bg};'>"
+        
+        # Column 1: Service
+        html += f"<td><div class='std-padding'>{item['cluster_name']}<br>{item['namespace']}<br><b>{item['object_name']}</b></div></td>"
+        
+        # Column 2: Replicas
+        html += f"<td><div class='std-padding'>{replica_str}</div></td>"
+
+        # Column 3: CERTIFICATE DETAILS
+        html += "<td>" # No padding on the TD itself
+        for cert in item['certificates']:
+            html += "<div class='cert-container'>"
+            html += f"<b>Current:</b> {cert['distinguished_name']}<br><span class='serial'>S/N: {cert['serial_number']}</span>"
+            
+            if not cert['attention_required']:
+                html += f"""
+                <div class="renewed-box">
+                    <span class="badge">MATCH {cert['similarity_score']}%</span><br>
+                    <b>Renewed DN:</b> {cert['renewed_distinguished_name']}<br>
+                    <b>Renewed S/N:</b> <span class="serial">{cert['renewed_serial_number']}</span>
+                </div>
+                """
+            else:
+                html += "<div style='color:#d9534f; font-weight:bold; margin-top:5px;'>⚠️ No valid renewal found</div>"
+            html += "</div>"
+        html += "</td>"
+
+        # Column 4: Status
+        html += f"<td><div class='std-padding'>{status_label}</div></td>"
+        html += "</tr>"
+
+    html += "</table></body></html>"
+    
+
+async def send_summary_email(self, status: str, data: List[Dict[str, Any]]) -> None:
     if status == "FAILURE":
         logging.error(f"Job Failed: {data}")
         return
