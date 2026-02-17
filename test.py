@@ -1,3 +1,36 @@
+from rapidfuzz import fuzz
+
+def compare_dn_values(dn1, dn2):
+    # 1. Clean the strings (remove 'DN=' and lowercase everything)
+    s1 = dn1.lower().replace("dn=", "").strip()
+    s2 = dn2.lower().replace("dn=", "").strip()
+
+    # 2. Calculate Partial Ratio
+    # Best for: Substrings (finding 'CRSFSCV' inside '126743crsfscvprodssl')
+    partial_score = fuzz.partial_ratio(s1, s2)
+
+    # 3. Calculate Token Set Ratio
+    # Best for: Rearranged words or partial domain matches 
+    # (e.g., 'prod.cyberark.com' vs 'prod.renewedcyberark.net')
+    token_score = fuzz.token_set_ratio(s1, s2)
+
+    return partial_score, token_score
+
+# Test Data
+outliers = [
+    ("DN= CRSFSCV", "DN=126743crsfscvprodssl"),
+    ("Dn=prod.cyberark.com", "DN=prod.renewedcyberark.net"),
+    ("CN=ServiceAlpha", "CN=ServiceAlpha-Old-Version")
+]
+
+print(f"{'Original DN':<25} | {'New DN':<30} | {'Partial':<8} | {'Token Set'}")
+print("-" * 85)
+
+for d1, d2 in outliers:
+    p_score, t_score = compare_dn_values(d1, d2)
+    print(f"{d1:<25} | {d2:<30} | {p_score:<8.1f} | {t_score:.1f}")
+
+
 # ==============================================================================
 # TECHNICAL DESIGN DOCUMENT (TDD): PROD CERTIFICATE ANALYSIS ENGINE v2.0
 # ==============================================================================
