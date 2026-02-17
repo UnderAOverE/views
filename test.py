@@ -1,3 +1,103 @@
+async def send_summary_email(self, status: str, data: List[Dict[str, Any]]) -> None:
+    if status == "FAILURE":
+        logging.error(f"Job Failed: {data}")
+        return
+
+    html = """
+    <html>
+    <head>
+        <style>
+            table { border-collapse: collapse; width: 100%; font-family: sans-serif; font-size: 13px; }
+            th { background-color: #f2f2f2; text-align: left; padding: 10px; border: 1px solid #ddd; }
+            td { padding: 10px; border: 1px solid #ddd; vertical-align: top; }
+            .renewed-box { background: #f0fff4; border: 1px dashed #28a745; padding: 5px; margin-top: 5px; font-size: 11px; }
+            .serial { font-family: monospace; color: #666; }
+            .badge { padding: 2px 5px; border-radius: 3px; font-weight: bold; font-size: 10px; }
+        </style>
+    </head>
+    <body>
+        <h2>Production Certificate Renewal Report</h2>
+    """
+
+    # --- SORTING LOGIC ---
+    def get_sort_priority(item):
+        # State 1: Missing Service (No replicas found in API)
+        if item['replicas'].get('total', 0) <= 0: return 2
+        # State 2: At least one cert needs attention
+        if any(c['attention_required'] for c in item['certificates']): return 1
+        # State 3: All certs renewed
+        return 0
+
+    sorted_data = sorted(data, key=get_sort_priority, reverse=True)
+
+    html += """
+        <table>
+            <tr>
+                <th>Service (Cluster/NS/Obj)</th>
+                <th>Replicas</th>
+                <th>Certificate Details & Renewal Match</th>
+                <th>Status</th>
+            </tr>
+    """
+
+    for item in sorted_data:
+        # Determine Status and Row Styling
+        priority = get_sort_priority(item)
+        replica_str = f"{item['replicas'].get('available', 0)}/{item['replicas'].get('total', 0)}"
+        
+        if priority == 2:
+            status_label = "<b style='color: #0056b3;'>MISSING SERVICE</b>"
+            row_bg = "#eef7ff"
+        elif priority == 1:
+            status_label = "<b style='color: #d9534f;'>ACTION REQ</b>"
+            row_bg = "#fff3f3"
+        else:
+            status_label = "<span style='color: #28a745;'>All Renewed</span>"
+            row_bg = "#ffffff"
+
+        html += f"<tr style='background-color: {row_bg};'>"
+        
+        # Column 1: Service Name
+        html += f"<td>{item['cluster_name']}<br>{item['namespace']}<br><b>{item['object_name']}</b></td>"
+        
+        # Column 2: Replicas
+        html += f"<td style='text-align:center;'>{replica_str}</td>"
+
+        # Column 3: CERTIFICATE DETAILS (The core update)
+        html += "<td>"
+        for cert in item['certificates']:
+            # Show current cert basic info
+            html += f"<div><b>Current:</b> {cert['distinguished_name']}<br><span class='serial'>S/N: {cert['serial_number']}</span></div>"
+            
+            # If renewed (attention_required is False), show the match details
+            if not cert['attention_required']:
+                html += f"""
+                <div class="renewed-box">
+                    <span class="badge" style="background:#d4edda; color:#155724;">MATCH {cert['similarity_score']}%</span><br>
+                    <b>Renewed DN:</b> {cert['renewed_distinguished_name']}<br>
+                    <b>Renewed S/N:</b> <span class="serial">{cert['renewed_serial_number']}</span>
+                </div>
+                """
+            else:
+                html += "<div style='color:#d9534f; font-size:11px;'>⚠️ No valid renewal found in production cache.</div>"
+            
+            html += "<hr style='border:0; border-top:1px solid #eee; margin:10px 0;'>"
+        html += "</td>"
+
+        # Column 4: Status
+        html += f"<td style='text-align:center;'>{status_label}</td>"
+        html += "</tr>"
+
+    html += "</table></body></html>"
+    
+    # Send email command here...
+    logging.info("HTML Summary with Renewal Details Generated.")
+
+
+
+
+
+
 from rapidfuzz import fuzz
 
 def is_similar_dn(dn1, dn2, threshold=80):
