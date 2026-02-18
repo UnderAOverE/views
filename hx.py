@@ -1,36 +1,3 @@
-// Primary aggregation index
-db.ConsolidatedData.createIndex({
-    "log_date": -1,
-    "days_to_expiration": 1,
-    "source_properties.microservice_name": 1,
-    "source_properties.environment": 1,
-    "status": 1
-}, { name: "microservice_name_pipeline_index" });
-
-// Healthy cert lookup index (for the cache builder)
-db.ConsolidatedData.createIndex({
-    "log_date": -1,
-    "source_properties.microservice_name": 1,
-    "source_properties.environment": 1,
-    "distinguished_name": 1,
-    "days_to_expiration": 1,
-    "expiration_date": 1,
-    "source_properties.serial_number": 1,
-    "status": 1,
-    "source_properties.name": 1
-}, { name: "cache_ssltracker_index" });
-
-// Unique shard key / lookup key
-db.ServicesAlerts.createIndex({
-    "cluster_name": 1,
-    "namespace": 1,
-    "object_name": 1
-}, { unique: true, name: "cluster_name_aidx_namespace_aidx_object_name_aidx" });
-
-
-
-
-
 import asyncio
 import logging
 from datetime import datetime, timedelta, UTC
@@ -38,36 +5,23 @@ from typing import Any, Dict, List, Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from rapidfuzz import fuzz
-from pymongo import UpdateOne
 
-# Configure Logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-class CertificateMatcherEngine:
+class RenewalMatcher:
     """
-    Engine to match expiring certificates from ServiceAlerts with 
-    potential renewals in ConsolidatedData using fuzzy logic.
+    Analyzes ServiceAlerts and finds potential renewals in ConsolidatedData.
     """
 
-    def __init__(self, mongo_uri: str, db_name: str):
-        """
-        :param mongo_uri: MongoDB connection string
-        :type mongo_uri: str
-        :param db_name: Target database name
-        :type db_name: str
-        """
-        self.client = AsyncIOMotorClient(mongo_uri)
+    def __init__(self, uri: str, db_name: str):
+        self.client = AsyncIOMotorClient(uri)
         self.db = self.client[db_name]
-        self.service_alerts = self.db["ServiceAlerts"]
-        self.consolidated = self.db["ConsolidatedData"]
-        self.semaphore = asyncio.Semaphore(10)  # Limit concurrency
+        self.alerts_coll = self.db["ServiceAlerts"]
+        self.consolidated_coll = self.db["ConsolidatedData"]
 
-    async def get_expiring_alerts(self) -> List[Dict[str, Any]]:
+    async def step_1_get_recent_alerts(self) -> List[Dict[str, Any]]:
         """
-        Step 1: Fetch certificates needing attention from the last hour.
+        Fetches certificates needing attention from the last hour.
         
-        :return: A list of flattened alert objects.
+        :return: Flattened list of certificates requiring attention.
         :rtype: List[Dict[str, Any]]
         """
         one_hour_ago = datetime.now(UTC) - timedelta(hours=1)
@@ -78,197 +32,172 @@ class CertificateMatcherEngine:
             {"$match": {"certificates.attention_required": True}},
             {
                 "$project": {
+                    "_id": 0,
                     "cluster_name": 1,
                     "namespace": 1,
                     "object_name": 1,
                     "csi_id": 1,
                     "log_datetime": 1,
-                    "dn": "$certificates.distinguished_name",
-                    "days": "$certificates.days_to_expiration",
-                    "expiry": "$certificates.expiration_date",
-                    "sn": "$certificates.serial_number"
+                    "distinguished_name": "$certificates.distinguished_name",
+                    "days_to_expiration": "$certificates.days_to_expiration",
+                    "expiration_date": "$certificates.expiration_date",
+                    "serial_number": "$certificates.serial_number"
                 }
             }
         ]
-        
-        cursor = self.service_alerts.aggregate(pipeline)
-        return await cursor.to_list(length=None)
+        return await self.alerts_coll.aggregate(pipeline).to_list(length=None)
 
-    async def find_matches_for_dn(self, alert: Dict[str, Any]) -> Dict[str, Any]:
+    async def step_2_3_find_matches(self, alert: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Steps 2 & 3: Find potential renewals in ConsolidatedData and score them.
+        Finds matching renewals for a single expiring certificate.
         
-        :param alert: The alert document from Step 1.
-        :type alert: Dict[str, Any]
-        :return: Result dictionary with match list.
-        :rtype: Dict[str, Any]
+        :param alert: The alert dictionary from Step 1.
+        :return: Alert enriched with a list of up to 3 matches.
         """
-        async with self.semaphore:
-            seven_days_ago = datetime.now(UTC) - timedelta(days=7)
+        # Range: Looking for certs logged in the last 7 days
+        seven_days_ago = datetime.now(UTC) - timedelta(days=7)
+        
+        # Filtering ConsolidatedData
+        query = {
+            "csi_application_id": alert["csi_id"],
+            "status": "Valid",
+            "source_properties.environment": {"$in": ["prod", "PRODUCTION"]},
+            "log_date": {"$gte": seven_days_ago},
+            # Upper bound to ignore signers (e.g., ignore anything > 4 years)
+            "days_to_expiration": {"$gt": alert["days_to_expiration"], "$lt": 1460}
+        }
+        
+        matches = []
+        # Sort by expiration date so we see the newest ones first
+        cursor = self.consolidated_coll.find(query).sort("expiration_date", -1)
+        
+        async for doc in cursor:
+            # Step 3: RapidFuzz Logic
+            s1 = alert["distinguished_name"].lower()
+            s2 = doc["distinguished_name"].lower()
             
-            # Optimization: Filter by CSI_ID first to avoid global regex scan
-            query = {
-                "csi_application_id": alert["csi_id"],
-                "status": "Valid",
-                "source_properties.environment": {"$in": ["prod", "PRODUCTION"]},
-                "log_date": {"$gte": seven_days_ago},
-                "days_to_expiration": {"$gt": alert["days"], "$lt": 1500} # Exclude obvious signers
-            }
-
-            potential_matches = []
-            cursor = self.consolidated.find(query).sort("expiration_date", -1)
+            # We take the best of Partial or Token Set ratio
+            score = max(fuzz.partial_ratio(s1, s2), fuzz.token_set_ratio(s1, s2))
             
-            async for doc in cursor:
-                target_dn = doc["distinguished_name"]
-                
-                # RapidFuzz Logic
-                p_score = fuzz.partial_ratio(alert["dn"].lower(), target_dn.lower())
-                t_score = fuzz.token_set_ratio(alert["dn"].lower(), target_dn.lower())
-                max_score = max(p_score, t_score)
-
-                if max_score >= 80:  # 80% similarity threshold
-                    potential_matches.append({
-                        "distinguished_name": target_dn,
-                        "days_to_expiration": doc["days_to_expiration"],
-                        "expiration_date": doc["expiration_date"],
-                        "serial_number": doc["source_properties"].get("serial_number"),
-                        "similarity_score": round(max_score, 2)
-                    })
-
-            # Sort by expiration date descending and limit to 3
-            potential_matches.sort(key=lambda x: x["expiration_date"], reverse=True)
+            if score >= 80: # Threshold for similarity
+                matches.append({
+                    "distinguished_name": doc["distinguished_name"],
+                    "days_to_expiration": doc["days_to_expiration"],
+                    "expiration_date": doc["expiration_date"],
+                    "serial_number": doc["source_properties"].get("serial_number", "N/A"),
+                    "similarity_score": round(score, 2)
+                })
             
-            return {
-                "cluster_name": alert["cluster_name"],
-                "namespace": alert["namespace"],
-                "object_name": alert["object_name"],
-                "csi_id": alert["csi_id"],
-                "distinguished_name": alert["dn"],
-                "days_to_expiration": alert["days"],
-                "expiration_date": alert["expiry"],
-                "serial_number": alert["sn"],
-                "certificates_match": potential_matches[:3],
-                "log_datetime": alert["log_datetime"]
-            }
+            if len(matches) >= 10: # Fetch a buffer, limit to 3 after final sort
+                break
 
-    async def process(self) -> List[Dict[str, Any]]:
-        """
-        Orchestrates the lookup and matching process.
+        # Final Sort: Newest Expiration First
+        matches.sort(key=lambda x: x["expiration_date"], reverse=True)
         
-        :return: Final list of enriched alerts.
-        :rtype: List[Dict[str, Any]]
-        """
-        logger.info("Fetching expiring alerts...")
-        alerts = await self.get_expiring_alerts()
-        
-        if not alerts:
-            logger.info("No new alerts found in the last hour.")
-            return []
-
-        logger.info(f"Processing matches for {len(alerts)} certificates...")
-        tasks = [self.find_matches_for_dn(a) for a in alerts]
-        results = await asyncio.gather(*tasks)
-        
-        # Sort final results by days_to_expiration (soonest first: 1 -> 7)
-        results.sort(key=lambda x: x["days_to_expiration"])
-        return results
+        alert["certificates_match"] = matches[:3]
+        return alert
 
     def generate_email_html(self, results: List[Dict[str, Any]]) -> str:
         """
-        Generates a modern HTML report.
+        Builds the dual-table modern email summary.
         """
-        table_rows = ""
-        match_rows = ""
+        # Sort results by urgency (days 1 to 7)
+        results.sort(key=lambda x: x["days_to_expiration"])
+        
+        table_1_rows = ""
+        table_2_rows = ""
 
-        for idx, r in enumerate(results, 1):
-            # Table 1 Rows
-            table_rows += f"""
+        for idx, item in enumerate(results, 1):
+            # Table 1: Expiring List
+            table_1_rows += f"""
             <tr>
-                <td>{idx}</td>
-                <td>{r['csi_id']}</td>
-                <td><b>{r['cluster_name']}</b><br>{r['namespace']}<br>{r['object_name']}</td>
-                <td style="font-family:monospace; font-size:11px;">{r['distinguished_name']}<br><small>SN: {r['serial_number']}</small></td>
-                <td style="text-align:center; color:{'red' if r['days_to_expiration'] < 3 else 'orange'};"><b>{r['days_to_expiration']}</b></td>
-                <td>{r['expiration_date'].strftime('%Y-%m-%d %H:%M')}</td>
+                <td style="text-align:center;">{idx}</td>
+                <td style="text-align:center;">{item['csi_id']}</td>
+                <td>{item['cluster_name']}<br>{item['namespace']}<br><b>{item['object_name']}</b></td>
+                <td style="font-family:monospace; font-size:11px;">{item['distinguished_name']}<br><small>SN: {item['serial_number']}</small></td>
+                <td style="text-align:center; background:#fff3f3; color:#d9534f;"><b>{item['days_to_expiration']}</b></td>
+                <td>{item['expiration_date'].strftime('%Y-%m-%d')}</td>
             </tr>
             """
-            
-            # Table 2 Rows (Matches)
-            matches_html = ""
-            if not r['certificates_match']:
-                matches_html = "<td colspan='3' style='color:#999;'>No matches found in database</td>"
-            else:
-                for m in r['certificates_match']:
-                    matches_html += f"""
-                    <td style="font-size:11px; background-color:#f0fff4; border:1px solid #c3e6cb;">
-                        <b>Score: {m['similarity_score']}%</b><br>
+
+            # Table 2: Match Grid
+            m_cells = ""
+            matches = item.get('certificates_match', [])
+            for i in range(3):
+                if i < len(matches):
+                    m = matches[i]
+                    m_cells += f"""
+                    <td style="background:#f0fff4; font-size:11px; border:1px solid #c3e6cb; width:25%;">
+                        <b style="color:#28a745;">{m['similarity_score']}% Match</b><br>
                         {m['distinguished_name']}<br>
-                        <small>SN: {m['serial_number']}</small><br>
-                        Exp: {m['expiration_date'].strftime('%Y-%m-%d')}
+                        <span style="color:#666;">SN: {m['serial_number']}</span><br>
+                        <small>Exp: {m['expiration_date'].strftime('%Y-%m-%d')}</small>
                     </td>
                     """
-                # Fill empty cells if less than 3 matches
-                for _ in range(3 - len(r['certificates_match'])):
-                    matches_html += "<td></td>"
+                else:
+                    m_cells += "<td style='background:#f9f9f9; color:#ccc; text-align:center;'>No further match</td>"
 
-            match_rows += f"""
+            table_2_rows += f"""
             <tr>
-                <td style="font-family:monospace; font-size:11px; background:#fff5f5;">{r['distinguished_name']}</td>
-                {matches_html}
+                <td style="font-family:monospace; font-size:11px; background:#fff5f5; width:25%;">
+                    <b>Expiring:</b><br>{item['distinguished_name']}<br><small>SN: {item['serial_number']}</small>
+                </td>
+                {m_cells}
             </tr>
             """
 
-        html = f"""
+        return f"""
         <html>
         <head>
             <style>
-                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #333; }}
-                table {{ width: 100%; border-collapse: collapse; margin-bottom: 30px; border: 1px solid #dee2e6; }}
-                th {{ background-color: #004a99; color: white; padding: 12px; text-align: left; font-size: 13px; }}
-                td {{ padding: 10px; border: 1px solid #dee2e6; font-size: 13px; vertical-align: top; }}
-                tr:nth-child(even) {{ background-color: #f8f9fa; }}
-                .match-header {{ background-color: #28a745; }}
-                .note {{ background: #e9ecef; padding: 15px; border-left: 5px solid #004a99; margin-bottom: 20px; }}
+                body {{ font-family: sans-serif; color: #333; line-height: 1.4; }}
+                table {{ width: 100%; border-collapse: collapse; margin-bottom: 25px; }}
+                th {{ background: #004a99; color: white; padding: 10px; font-size: 12px; border: 1px solid #ddd; }}
+                td {{ padding: 8px; border: 1px solid #ddd; font-size: 12px; vertical-align: top; }}
+                .header-match {{ background: #28a745; }}
             </style>
         </head>
         <body>
-            <h2>Production Certificate Expiration Report</h2>
-            <div class="note">
-                The following certificates are expiring soon and require manual intervention. 
-                We have analyzed the database and found potential renewals (matches) based on naming patterns.
-            </div>
-            
-            <h3>1. Certificates Expiring (Action Required)</h3>
+            <h3>1. Certificates Requiring Immediate Attention</h3>
             <table>
                 <tr>
                     <th>S.No.</th><th>CSI</th><th>Service Details</th><th>Expiring Certificate</th><th>Days</th><th>Expiration Date</th>
                 </tr>
-                {table_rows}
+                {table_1_rows}
             </table>
 
-            <h3>2. Potential Renewal Matches Found</h3>
-            <p>We found these certificates in the database that might be the intended renewals for the expiring ones above:</p>
+            <h3>2. Renewal Analysis (Potential Matches)</h3>
+            <p>The following matches were found in the database. These certificates may have been intended as renewals:</p>
             <table>
                 <tr>
                     <th style="background:#d9534f;">Expiring Certificate</th>
-                    <th class="match-header">Match 1 (Newest)</th>
-                    <th class="match-header">Match 2</th>
-                    <th class="match-header">Match 3</th>
+                    <th class="header-match">Match 1 (Newest)</th>
+                    <th class="header-match">Match 2</th>
+                    <th class="header-match">Match 3</th>
                 </tr>
-                {match_rows}
+                {table_2_rows}
             </table>
         </body>
         </html>
         """
-        return html
 
-async def main():
-    engine = CertificateMatcherEngine("mongodb://uri", "db_name")
-    results = await engine.process()
-    if results:
-        email_body = engine.generate_email_html(results)
-        # Add your SMTP sending logic here
-        print("Report Generated Successfully.")
+    async def run(self):
+        # Step 1
+        alerts = await self.step_1_get_recent_alerts()
+        if not alerts:
+            print("No new alerts to process.")
+            return
 
+        # Step 2 & 3
+        tasks = [self.step_2_3_find_matches(alert) for alert in alerts]
+        final_results = await asyncio.gather(*tasks)
+        
+        # Email Generation
+        html_body = self.generate_email_html(final_results)
+        # Send Email Logic...
+        print("Analysis Complete. HTML Generated.")
+
+# Execution
 if __name__ == "__main__":
-    asyncio.run(main())
+    matcher = RenewalMatcher("mongodb://localhost:27017", "your_db")
+    asyncio.run(matcher.run())
