@@ -1,390 +1,241 @@
-import httpx
-from typing import Dict, Any, Optional, Union, List
-
-# A semaphore to limit concurrent asynchronous requests
-CONCURRENCY_LIMIT = 100
-semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
-
-class RequestService:
-    def __init__(self):
-        """Initializes the RequestService. httpx handles session management internally."""
-        pass
-    
-    def _prepare_request_args(
-        self,
-        headers: Optional[Dict[str, str]],
-        bearer_token: Optional[str]
-    ) -> Dict[str, Any]:
-        """Prepares headers, including adding a bearer token."""
-        if headers is None:
-            headers = {}
-        if bearer_token:
-            headers["Authorization"] = f"Bearer {bearer_token}"
-        return {"headers": headers}
-
-    def fetch_sync(
-        self,
-        url: str,
-        method: str = "GET",
-        headers: Optional[Dict[str, str]] = None,
-        bearer_token: Optional[str] = None,
-        params: Optional[Dict[str, str]] = None,
-        data: Optional[Any] = None,
-        json: Optional[Any] = None,
-        timeout: int = 30,
-        ssl: bool = True,
-        proxies: Optional[str] = None,
-        expected_status: int = 200,
-        expected_content_type: Optional[str] = None
-    ) -> Optional[Union[Dict, str]]:
-        """
-        Synchronously fetches a URL with configurable options.
-        
-        :param url: The URL to fetch.
-        ... other params ...
-        :return: The response data as a dict (for JSON) or str, or None on failure.
-        """
-        try:
-            with httpx.Client(
-                proxies=proxies,
-                timeout=timeout,
-                verify=ssl
-            ) as client:
-                print(f"Sync fetching {method} {url}")
-                request_args = self._prepare_request_args(headers, bearer_token)
-                
-                response = client.request(
-                    method,
-                    url,
-                    params=params,
-                    data=data,
-                    json=json,
-                    **request_args
-                )
-                
-                if response.status_code != expected_status:
-                    print(f"Error: {url} returned status {response.status_code}, expected {expected_status}.")
-                    return None
-                    
-                content_type = response.headers.get("Content-Type", "")
-                if expected_content_type and expected_content_type not in content_type:
-                    print(f"Error: {url} returned content type '{content_type}', expected '{expected_content_type}'.")
-                    return None
-                
-                if "application/json" in content_type:
-                    return response.json()
-                else:
-                    return response.text
-            
-        except httpx.HTTPStatusError as e:
-            print(f"HTTP error for {e.request.url}: {e}")
-        except httpx.RequestError as e:
-            print(f"An error occurred while requesting {e.request.url}: {e}")
-        except Exception as e:
-            print(f"An unexpected error occurred: {e}")
-        return None
-
-    async def fetch_async(
-        self,
-        url: str,
-        method: str = "GET",
-        headers: Optional[Dict[str, str]] = None,
-        bearer_token: Optional[str] = None,
-        params: Optional[Dict[str, str]] = None,
-        data: Optional[Any] = None,
-        json: Optional[Any] = None,
-        timeout: int = 30,
-        ssl: bool = True,
-        proxies: Optional[str] = None,
-        expected_status: int = 200,
-        expected_content_type: Optional[str] = None
-    ) -> Optional[Union[Dict, str]]:
-        """
-        Asynchronously fetches a URL with configurable options.
-        
-        :param url: The URL to fetch.
-        ... other params ...
-        :return: The response data as a dict (for JSON) or str, or None on failure.
-        """
-        async with semaphore:
-            try:
-                async with httpx.AsyncClient(
-                    proxies=proxies,
-                    timeout=timeout,
-                    verify=ssl
-                ) as client:
-                    print(f"Async fetching {method} {url}")
-                    request_args = self._prepare_request_args(headers, bearer_token)
-                    
-                    response = await client.request(
-                        method,
-                        url,
-                        params=params,
-                        data=data,
-                        json=json,
-                        **request_args
-                    )
-                    
-                    if response.status_code != expected_status:
-                        print(f"Error: {url} returned status {response.status_code}, expected {expected_status}.")
-                        return None
-                        
-                    content_type = response.headers.get("Content-Type", "")
-                    if expected_content_type and expected_content_type not in content_type:
-                        print(f"Error: {url} returned content type '{content_type}', expected '{expected_content_type}'.")
-                        return None
-                    
-                    if "application/json" in content_type:
-                        return response.json()
-                    else:
-                        return response.text
-            
-            except httpx.HTTPStatusError as e:
-                print(f"HTTP error for {e.request.url}: {e}")
-            except httpx.RequestError as e:
-                print(f"An error occurred while requesting {e.request.url}: {e}")
-            except Exception as e:
-                print(f"An unexpected error occurred: {e}")
-            return None
-
-# ================================
-# Example Usage
-# ================================
-async def main_async():
-    service = RequestService()
-    
-    urls = [
-        f"http://httpbin.org/status/200",
-        f"http://httpbin.org/status/404",
-        f"http://httpbin.org/json",
-        f"http://httpbin.org/text"
-    ]
-    
-    tasks = [
-        service.fetch_async(urls[2], expected_content_type="application/json"),
-        service.fetch_async(urls[3], expected_content_type="text/plain"),
-        service.fetch_async(urls[1]),
-        service.fetch_async(urls[0], expected_content_type="application/json")
-    ]
-    
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    for i, res in enumerate(results):
-        print(f"\nAsync result {i}: {res}")
-
-def main_sync():
-    service = RequestService()
-    
-    urls = [
-        f"http://httpbin.org/status/200",
-        f"http://httpbin.org/json",
-        f"http://httpbin.org/text"
-    ]
-    
-    # Note: No concurrency here, as it's a synchronous call
-    res_json = service.fetch_sync(urls[1], expected_content_type="application/json")
-    print(f"\nSync JSON result: {res_json['slideshow']['author']}")
-    
-    res_text = service.fetch_sync(urls[2], expected_content_type="text/plain")
-    print(f"\nSync Text result: {res_text}")
-
-if __name__ == "__main__":
-    # You can choose to run either the sync or async example
-    # For sync:
-    # main_sync()
-    
-    # For async:
-    asyncio.run(main_async())
-    
-    
-    
-    
-    
-    
-    
-import httpx
 import asyncio
-from typing import Dict, Any, List
+import logging
+from datetime import datetime, timedelta, UTC
+from typing import Any, Dict, List, Optional
 
-# A semaphore to limit concurrent asynchronous requests
-CONCURRENCY_LIMIT = 100
-semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
+from motor.motor_asyncio import AsyncIOMotorClient
+from rapidfuzz import fuzz
+from pymongo import UpdateOne
 
-class RequestService:
-    def __init__(self):
-        """Initializes the RequestService. httpx handles session management internally."""
-        pass
-    
-    def _prepare_request_args(
-        self,
-        headers: Dict[str, str] | None,
-        bearer_token: str | None
-    ) -> Dict[str, Any]:
-        """Prepares headers, including adding a bearer token."""
-        if headers is None:
-            headers = {}
-        if bearer_token:
-            headers["Authorization"] = f"Bearer {bearer_token}"
-        return {"headers": headers}
+# Configure Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-    def fetch_sync(
-        self,
-        url: str,
-        method: str = "GET",
-        headers: Dict[str, str] | None = None,
-        bearer_token: str | None = None,
-        params: Dict[str, str] | None = None,
-        data: Any | None = None,
-        json: Any | None = None,
-        timeout: int = 30,
-        ssl: bool = True,
-        proxies: str | None = None,
-        expected_status: int = 200,
-        expected_content_type: str | None = None
-    ) -> Dict | str | None:
+class CertificateMatcherEngine:
+    """
+    Engine to match expiring certificates from ServiceAlerts with 
+    potential renewals in ConsolidatedData using fuzzy logic.
+    """
+
+    def __init__(self, mongo_uri: str, db_name: str):
         """
-        Synchronously fetches a URL with configurable options.
+        :param mongo_uri: MongoDB connection string
+        :type mongo_uri: str
+        :param db_name: Target database name
+        :type db_name: str
         """
-        try:
-            with httpx.Client(
-                proxies=proxies,
-                timeout=timeout,
-                verify=ssl
-            ) as client:
-                print(f"Sync fetching {method} {url}")
-                request_args = self._prepare_request_args(headers, bearer_token)
-                
-                response = client.request(
-                    method,
-                    url,
-                    params=params,
-                    data=data,
-                    json=json,
-                    **request_args
-                )
-                
-                if response.status_code != expected_status:
-                    print(f"Error: {url} returned status {response.status_code}, expected {expected_status}.")
-                    return None
-                    
-                content_type = response.headers.get("Content-Type", "")
-                if expected_content_type and expected_content_type not in content_type:
-                    print(f"Error: {url} returned content type '{content_type}', expected '{expected_content_type}'.")
-                    return None
-                
-                if "application/json" in content_type:
-                    return response.json()
-                else:
-                    return response.text
+        self.client = AsyncIOMotorClient(mongo_uri)
+        self.db = self.client[db_name]
+        self.service_alerts = self.db["ServiceAlerts"]
+        self.consolidated = self.db["ConsolidatedData"]
+        self.semaphore = asyncio.Semaphore(10)  # Limit concurrency
+
+    async def get_expiring_alerts(self) -> List[Dict[str, Any]]:
+        """
+        Step 1: Fetch certificates needing attention from the last hour.
+        
+        :return: A list of flattened alert objects.
+        :rtype: List[Dict[str, Any]]
+        """
+        one_hour_ago = datetime.now(UTC) - timedelta(hours=1)
+        
+        pipeline = [
+            {"$match": {"log_datetime": {"$gte": one_hour_ago}}},
+            {"$unwind": "$certificates"},
+            {"$match": {"certificates.attention_required": True}},
+            {
+                "$project": {
+                    "cluster_name": 1,
+                    "namespace": 1,
+                    "object_name": 1,
+                    "csi_id": 1,
+                    "log_datetime": 1,
+                    "dn": "$certificates.distinguished_name",
+                    "days": "$certificates.days_to_expiration",
+                    "expiry": "$certificates.expiration_date",
+                    "sn": "$certificates.serial_number"
+                }
+            }
+        ]
+        
+        cursor = self.service_alerts.aggregate(pipeline)
+        return await cursor.to_list(length=None)
+
+    async def find_matches_for_dn(self, alert: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Steps 2 & 3: Find potential renewals in ConsolidatedData and score them.
+        
+        :param alert: The alert document from Step 1.
+        :type alert: Dict[str, Any]
+        :return: Result dictionary with match list.
+        :rtype: Dict[str, Any]
+        """
+        async with self.semaphore:
+            seven_days_ago = datetime.now(UTC) - timedelta(days=7)
             
-        except httpx.HTTPStatusError as e:
-            print(f"HTTP error for {e.request.url}: {e}")
-        except httpx.RequestError as e:
-            print(f"An error occurred while requesting {e.request.url}: {e}")
-        except Exception as e:
-            print(f"An unexpected error occurred: {e}")
-        return None
+            # Optimization: Filter by CSI_ID first to avoid global regex scan
+            query = {
+                "csi_application_id": alert["csi_id"],
+                "status": "Valid",
+                "source_properties.environment": {"$in": ["prod", "PRODUCTION"]},
+                "log_date": {"$gte": seven_days_ago},
+                "days_to_expiration": {"$gt": alert["days"], "$lt": 1500} # Exclude obvious signers
+            }
 
-    async def fetch_async(
-        self,
-        url: str,
-        method: str = "GET",
-        headers: Dict[str, str] | None = None,
-        bearer_token: str | None = None,
-        params: Dict[str, str] | None = None,
-        data: Any | None = None,
-        json: Any | None = None,
-        timeout: int = 30,
-        ssl: bool = True,
-        proxies: str | None = None,
-        expected_status: int = 200,
-        expected_content_type: str | None = None
-    ) -> Dict | str | None:
-        """
-        Asynchronously fetches a URL with configurable options.
-        """
-        async with semaphore:
-            try:
-                async with httpx.AsyncClient(
-                    proxies=proxies,
-                    timeout=timeout,
-                    verify=ssl
-                ) as client:
-                    print(f"Async fetching {method} {url}")
-                    request_args = self._prepare_request_args(headers, bearer_token)
-                    
-                    response = await client.request(
-                        method,
-                        url,
-                        params=params,
-                        data=data,
-                        json=json,
-                        **request_args
-                    )
-                    
-                    if response.status_code != expected_status:
-                        print(f"Error: {url} returned status {response.status_code}, expected {expected_status}.")
-                        return None
-                        
-                    content_type = response.headers.get("Content-Type", "")
-                    if expected_content_type and expected_content_type not in content_type:
-                        print(f"Error: {url} returned content type '{content_type}', expected '{expected_content_type}'.")
-                        return None
-                    
-                    if "application/json" in content_type:
-                        return response.json()
-                    else:
-                        return response.text
+            potential_matches = []
+            cursor = self.consolidated.find(query).sort("expiration_date", -1)
             
-            except httpx.HTTPStatusError as e:
-                print(f"HTTP error for {e.request.url}: {e}")
-            except httpx.RequestError as e:
-                print(f"An error occurred while requesting {e.request.url}: {e}")
-            except Exception as e:
-                print(f"An unexpected error occurred: {e}")
-            return None
+            async for doc in cursor:
+                target_dn = doc["distinguished_name"]
+                
+                # RapidFuzz Logic
+                p_score = fuzz.partial_ratio(alert["dn"].lower(), target_dn.lower())
+                t_score = fuzz.token_set_ratio(alert["dn"].lower(), target_dn.lower())
+                max_score = max(p_score, t_score)
 
-# ================================
-# Example Usage
-# ================================
-async def main_async():
-    service = RequestService()
-    
-    urls = [
-        f"http://httpbin.org/status/200",
-        f"http://httpbin.org/status/404",
-        f"http://httpbin.org/json",
-        f"http://httpbin.org/text"
-    ]
-    
-    tasks = [
-        service.fetch_async(urls[2], expected_content_type="application/json"),
-        service.fetch_async(urls[3], expected_content_type="text/plain"),
-        service.fetch_async(urls[1]),
-        service.fetch_async(urls[0], expected_content_type="application/json")
-    ]
-    
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    
-    for i, res in enumerate(results):
-        print(f"\nAsync result {i}: {res}")
+                if max_score >= 80:  # 80% similarity threshold
+                    potential_matches.append({
+                        "distinguished_name": target_dn,
+                        "days_to_expiration": doc["days_to_expiration"],
+                        "expiration_date": doc["expiration_date"],
+                        "serial_number": doc["source_properties"].get("serial_number"),
+                        "similarity_score": round(max_score, 2)
+                    })
 
-def main_sync():
-    service = RequestService()
-    
-    urls = [
-        f"http://httpbin.org/status/200",
-        f"http://httpbin.org/json",
-        f"http://httpbin.org/text"
-    ]
-    
-    res_json = service.fetch_sync(urls[1], expected_content_type="application/json")
-    print(f"\nSync JSON result: {res_json['slideshow']['author']}")
-    
-    res_text = service.fetch_sync(urls[2], expected_content_type="text/plain")
-    print(f"\nSync Text result: {res_text}")
+            # Sort by expiration date descending and limit to 3
+            potential_matches.sort(key=lambda x: x["expiration_date"], reverse=True)
+            
+            return {
+                "cluster_name": alert["cluster_name"],
+                "namespace": alert["namespace"],
+                "object_name": alert["object_name"],
+                "csi_id": alert["csi_id"],
+                "distinguished_name": alert["dn"],
+                "days_to_expiration": alert["days"],
+                "expiration_date": alert["expiry"],
+                "serial_number": alert["sn"],
+                "certificates_match": potential_matches[:3],
+                "log_datetime": alert["log_datetime"]
+            }
+
+    async def process(self) -> List[Dict[str, Any]]:
+        """
+        Orchestrates the lookup and matching process.
+        
+        :return: Final list of enriched alerts.
+        :rtype: List[Dict[str, Any]]
+        """
+        logger.info("Fetching expiring alerts...")
+        alerts = await self.get_expiring_alerts()
+        
+        if not alerts:
+            logger.info("No new alerts found in the last hour.")
+            return []
+
+        logger.info(f"Processing matches for {len(alerts)} certificates...")
+        tasks = [self.find_matches_for_dn(a) for a in alerts]
+        results = await asyncio.gather(*tasks)
+        
+        # Sort final results by days_to_expiration (soonest first: 1 -> 7)
+        results.sort(key=lambda x: x["days_to_expiration"])
+        return results
+
+    def generate_email_html(self, results: List[Dict[str, Any]]) -> str:
+        """
+        Generates a modern HTML report.
+        """
+        table_rows = ""
+        match_rows = ""
+
+        for idx, r in enumerate(results, 1):
+            # Table 1 Rows
+            table_rows += f"""
+            <tr>
+                <td>{idx}</td>
+                <td>{r['csi_id']}</td>
+                <td><b>{r['cluster_name']}</b><br>{r['namespace']}<br>{r['object_name']}</td>
+                <td style="font-family:monospace; font-size:11px;">{r['distinguished_name']}<br><small>SN: {r['serial_number']}</small></td>
+                <td style="text-align:center; color:{'red' if r['days_to_expiration'] < 3 else 'orange'};"><b>{r['days_to_expiration']}</b></td>
+                <td>{r['expiration_date'].strftime('%Y-%m-%d %H:%M')}</td>
+            </tr>
+            """
+            
+            # Table 2 Rows (Matches)
+            matches_html = ""
+            if not r['certificates_match']:
+                matches_html = "<td colspan='3' style='color:#999;'>No matches found in database</td>"
+            else:
+                for m in r['certificates_match']:
+                    matches_html += f"""
+                    <td style="font-size:11px; background-color:#f0fff4; border:1px solid #c3e6cb;">
+                        <b>Score: {m['similarity_score']}%</b><br>
+                        {m['distinguished_name']}<br>
+                        <small>SN: {m['serial_number']}</small><br>
+                        Exp: {m['expiration_date'].strftime('%Y-%m-%d')}
+                    </td>
+                    """
+                # Fill empty cells if less than 3 matches
+                for _ in range(3 - len(r['certificates_match'])):
+                    matches_html += "<td></td>"
+
+            match_rows += f"""
+            <tr>
+                <td style="font-family:monospace; font-size:11px; background:#fff5f5;">{r['distinguished_name']}</td>
+                {matches_html}
+            </tr>
+            """
+
+        html = f"""
+        <html>
+        <head>
+            <style>
+                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #333; }}
+                table {{ width: 100%; border-collapse: collapse; margin-bottom: 30px; border: 1px solid #dee2e6; }}
+                th {{ background-color: #004a99; color: white; padding: 12px; text-align: left; font-size: 13px; }}
+                td {{ padding: 10px; border: 1px solid #dee2e6; font-size: 13px; vertical-align: top; }}
+                tr:nth-child(even) {{ background-color: #f8f9fa; }}
+                .match-header {{ background-color: #28a745; }}
+                .note {{ background: #e9ecef; padding: 15px; border-left: 5px solid #004a99; margin-bottom: 20px; }}
+            </style>
+        </head>
+        <body>
+            <h2>Production Certificate Expiration Report</h2>
+            <div class="note">
+                The following certificates are expiring soon and require manual intervention. 
+                We have analyzed the database and found potential renewals (matches) based on naming patterns.
+            </div>
+            
+            <h3>1. Certificates Expiring (Action Required)</h3>
+            <table>
+                <tr>
+                    <th>S.No.</th><th>CSI</th><th>Service Details</th><th>Expiring Certificate</th><th>Days</th><th>Expiration Date</th>
+                </tr>
+                {table_rows}
+            </table>
+
+            <h3>2. Potential Renewal Matches Found</h3>
+            <p>We found these certificates in the database that might be the intended renewals for the expiring ones above:</p>
+            <table>
+                <tr>
+                    <th style="background:#d9534f;">Expiring Certificate</th>
+                    <th class="match-header">Match 1 (Newest)</th>
+                    <th class="match-header">Match 2</th>
+                    <th class="match-header">Match 3</th>
+                </tr>
+                {match_rows}
+            </table>
+        </body>
+        </html>
+        """
+        return html
+
+async def main():
+    engine = CertificateMatcherEngine("mongodb://uri", "db_name")
+    results = await engine.process()
+    if results:
+        email_body = engine.generate_email_html(results)
+        # Add your SMTP sending logic here
+        print("Report Generated Successfully.")
 
 if __name__ == "__main__":
-    asyncio.run(main_async())
-    # main_sync()
-
+    asyncio.run(main())
