@@ -1,3 +1,36 @@
+// Primary aggregation index
+db.ConsolidatedData.createIndex({
+    "log_date": -1,
+    "days_to_expiration": 1,
+    "source_properties.microservice_name": 1,
+    "source_properties.environment": 1,
+    "status": 1
+}, { name: "microservice_name_pipeline_index" });
+
+// Healthy cert lookup index (for the cache builder)
+db.ConsolidatedData.createIndex({
+    "log_date": -1,
+    "source_properties.microservice_name": 1,
+    "source_properties.environment": 1,
+    "distinguished_name": 1,
+    "days_to_expiration": 1,
+    "expiration_date": 1,
+    "source_properties.serial_number": 1,
+    "status": 1,
+    "source_properties.name": 1
+}, { name: "cache_ssltracker_index" });
+
+// Unique shard key / lookup key
+db.ServicesAlerts.createIndex({
+    "cluster_name": 1,
+    "namespace": 1,
+    "object_name": 1
+}, { unique: true, name: "cluster_name_aidx_namespace_aidx_object_name_aidx" });
+
+
+
+
+
 import asyncio
 import logging
 from datetime import datetime, timedelta, UTC
