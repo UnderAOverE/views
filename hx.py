@@ -1,3 +1,28 @@
+db.ConsolidatedData.createIndex({
+    "source_properties.microservice_name": 1,
+    "status": 1,
+    "source_properties.environment": 1,
+    "log_date": -1
+}, { name: "idx_ms_lookup_main" });
+
+
+db.ConsolidatedData.createIndex({
+    "csi_application_id": 1,
+    "status": 1,
+    "source_properties.environment": 1,
+    "log_date": -1,
+    "expiration_date": -1
+}, { name: "idx_csi_renewal_matcher" });
+
+db.ConsolidatedData.createIndex({
+    "status": 1,
+    "source_properties.environment": 1,
+    "log_date": -1,
+    "days_to_expiration": 1
+}, { name: "idx_global_expiry_range" });
+
+
+
 
 query = {
     "source_properties.microservice_name": {
