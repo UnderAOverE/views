@@ -1,3 +1,55 @@
+
+query = {
+    "source_properties.microservice_name": {
+        "$in": ms_names,
+    },
+    "source_properties.environment": {
+        "$in": self.cm_settings.environments_to_monitor,
+    },
+    "log_date": {
+        "$gte": cutoff,
+    },
+    "status": Constants.valid.capitalize(),
+}
+
+projection = {
+    "distinguished_name": 1,
+    "days_to_expiration": 1,
+    "expiration_date": 1,
+    "source_properties.serial_number": 1,
+    "source_properties.microservice_name": 1,
+    "_id": 0,
+}
+
+pipeline = [
+    {
+        "$match": {
+            "log_date": {"$gte": cutoff_date},
+            "source_properties.environment": {"$in": self.cm_settings.environments_to_monitor},
+            "days_to_expiration": {"$lte": self.cm_settings.expiry_threshold, "$gt": 0},
+            "source_properties.microservice_name": {"$ne": "null"},
+            "status": Constants.valid.capitalize(),
+        }
+    },
+    {
+        "$group": {
+            "_id": "$source_properties.microservice_name",
+            "csi_id": {"$first": "$csi_application_id"},
+            "certificates": {
+                "$push": {
+                    "distinguished_name": "$distinguished_name",
+                    "days_to_expiration": "$days_to_expiration",
+                    "expiration_date": "$expiration_date",
+                    "serial_number": "$source_properties.serial_number",
+                }
+            },
+        }
+    },
+]
+
+
+
+
 import asyncio
 import logging
 from datetime import datetime, timedelta, UTC
