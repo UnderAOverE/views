@@ -1,3 +1,32 @@
+def process_unique_certificates(new_certs_list):
+    # This dictionary will store { dn_name: certificate_dict }
+    unique_tracker = {}
+
+    for new_cert in new_certs_list:
+        dn = new_cert['distinguished_name']
+        new_sn = new_cert['serial_number']
+        new_expiry = new_cert['expiration_date'] # Ensure this is a datetime object
+
+        # Case 1: DN not seen yet, add it
+        if dn not in unique_tracker:
+            unique_tracker[dn] = new_cert
+            continue
+
+        # Case 2: DN exists, perform checks
+        existing_cert = unique_tracker[dn]
+        
+        # Check if Serial Numbers are different
+        if new_sn != existing_cert['serial_number']:
+            # Compare Expiration Dates
+            # Only update if the new one is strictly NEWER (later date)
+            if new_expiry > existing_cert['expiration_date']:
+                unique_tracker[dn] = new_cert
+            # If dates are the same or older, we do nothing (ignore)
+            
+    # Convert the tracker back into a list of dictionaries
+    return list(unique_tracker.values())
+
+
 async def send_summary_email(self, status: str, data: List[Dict[str, Any]]) -> None:
     # ... (failure check remains the same) ...
 
