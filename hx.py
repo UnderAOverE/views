@@ -1,6 +1,195 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta, UTC
+from typing import Any, Dict, List
+
+from motor.motor_asyncio import AsyncIOMotorClient
+from rapidfuzz import fuzz
+
+class RenewalMatcher:
+    def __init__(self, uri: str, db_name: str):
+        self.client: AsyncIOMotorClient = AsyncIOMotorClient(uri)
+        self.db = self.client[db_name]
+        self.alerts_coll = self.db["ServiceAlerts"]
+        self.consolidated_coll = self.db["ConsolidatedData"]
+
+    async def step_1_get_recent_alerts(self) -> list[dict[str, Any]]:
+        """Fetch expiring certs from ServiceAlerts collection."""
+        one_hour_ago = datetime.now(UTC) - timedelta(hours=1)
+        pipeline = [
+            {"$match": {"log_datetime": {"$gte": one_hour_ago}}},
+            {"$unwind": "$certificates"},
+            {"$match": {"certificates.attention_required": True}},
+            {
+                "$project": {
+                    "_id": 0,
+                    "cluster_name": 1,
+                    "namespace": 1,
+                    "object_name": 1,
+                    "csi_id": 1,
+                    "dn": "$certificates.distinguished_name",
+                    "days": "$certificates.days_to_expiration",
+                    "expiry": "$certificates.expiration_date",
+                    "sn": "$certificates.serial_number"
+                }
+            }
+        ]
+        return await self.alerts_coll.aggregate(pipeline).to_list(length=None)
+
+    async def step_2_3_find_matches(self, alert: dict[str, Any]) -> dict[str, Any]:
+        """Find matches ensuring Match 1, 2, and 3 are unique certificates."""
+        # Freshness window (14 days)
+        cutoff = datetime.now(UTC) - timedelta(days=14)
+        
+        query = {
+            "csi_application_id": alert["csi_id"],
+            "status": "Valid",
+            "source_properties.environment": {"$in": ["prod", "PRODUCTION"]},
+            "log_date": {"$gte": cutoff},
+            "days_to_expiration": {"$gt": alert["days"], "$lt": 1460}
+        }
+        
+        matches = []
+        seen_match_serials = set() # PREVENTS IDENTICAL MATCHES IN COLUMNS
+        
+        # Sort by expiration date so Match 1 is always the best renewal candidate
+        cursor = self.consolidated_coll.find(query).sort("expiration_date", -1)
+        
+        async for doc in cursor:
+            match_sn = doc["source_properties"].get("serial_number", "N/A")
+            
+            # Skip if it's the same certificate as the expiring one or we already picked it
+            if match_sn == alert["sn"] or match_sn in seen_match_serials:
+                continue
+
+            score = max(
+                fuzz.partial_ratio(alert["dn"].lower(), doc["distinguished_name"].lower()),
+                fuzz.token_set_ratio(alert["dn"].lower(), doc["distinguished_name"].lower())
+            )
+            
+            if score >= 80:
+                seen_match_serials.add(match_sn)
+                matches.append({
+                    "dn": doc["distinguished_name"],
+                    "sn": match_sn,
+                    "expiry": doc["expiration_date"],
+                    "score": round(score, 2)
+                })
+            
+            if len(matches) >= 3:
+                break
+
+        alert["matches"] = matches
+        return alert
+
+    def generate_email_html(self, results: list[dict[str, Any]]) -> str:
+        """Generates de-duplicated Table 1 (per service) and Table 2 (per cert)."""
+        results.sort(key=lambda x: x["days"])
+        
+        table_1_rows = ""
+        # Dictionary to de-duplicate Table 2 rows by expiring Serial Number
+        unique_certs_for_table2: dict[str, dict] = {}
+
+        for idx, item in enumerate(results, 1):
+            # Table 1: Every service gets a row (even if certs are shared)
+            table_1_rows += f"""
+            <tr>
+                <td>{idx}</td>
+                <td>{item['csi_id']}</td>
+                <td>{item['cluster_name']}<br>{item['namespace']}<br><b>{item['object_name']}</b></td>
+                <td><small>{item['dn']}</small><br><small style='color:#666;'>SN: {item['sn']}</small></td>
+                <td style='text-align:center; color:red;'><b>{item['days']}</b></td>
+                <td>{item['expiry'].strftime('%Y-%m-%d')}</td>
+            </tr>
+            """
+            
+            # Group for Table 2: Only if there is at least one match
+            if item["matches"] and item["sn"] not in unique_certs_for_table2:
+                unique_certs_for_table2[item["sn"]] = item
+
+        # Build Table 2 Rows from the Unique Tracker
+        table_2_rows = ""
+        for sn, data in unique_certs_for_table2.items():
+            match_cells = ""
+            for i in range(3):
+                if i < len(data["matches"]):
+                    m = data["matches"][i]
+                    match_cells += f"""
+                    <td style='background:#f0fff4; border:1px solid #c3e6cb; font-size:11px;'>
+                        <b style='color:#28a745;'>{m['score']}% Match</b><br>
+                        {m['dn']}<br><small>SN: {m['sn']}</small><br>
+                        <small>Exp: {m['expiry'].strftime('%Y-%m-%d')}</small>
+                    </td>
+                    """
+                else:
+                    match_cells += "<td style='background:#f9f9f9; color:#999; text-align:center;'>N/A</td>"
+
+            table_2_rows += f"""
+            <tr>
+                <td style='background:#fff5f5; font-size:11px;'><b>Expiring Cert:</b><br>{data['dn']}<br><small>SN: {data['sn']}</small></td>
+                {match_cells}
+            </tr>
+            """
+
+        return f"""
+        <html>
+        <head>
+            <style>
+                body {{ font-family: sans-serif; }}
+                table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
+                th {{ background: #004a99; color: white; padding: 10px; font-size: 11px; border: 1px solid #ddd; }}
+                td {{ padding: 8px; border: 1px solid #ddd; font-size: 11px; vertical-align: top; }}
+            </style>
+        </head>
+        <body>
+            <h3>1. Services Requiring Attention (Per Service)</h3>
+            <table>
+                <tr><th>S.No.</th><th>CSI</th><th>Service Details</th><th>Expiring Cert</th><th>Days</th><th>Expiry</th></tr>
+                {table_1_rows}
+            </table>
+
+            <h3>2. Renewal Analysis (Unique Certs Only)</h3>
+            <table>
+                <tr>
+                    <th style='background:#d9534f;'>Expiring Certificate</th>
+                    <th style='background:#28a745;'>Match 1</th>
+                    <th style='background:#28a745;'>Match 2</th>
+                    <th style='background:#28a745;'>Match 3</th>
+                </tr>
+                {table_2_rows}
+            </table>
+        </body>
+        </html>
+        """
+
+    async def run(self):
+        alerts = await self.step_1_get_recent_alerts()
+        if not alerts: return
+        
+        tasks = [self.step_2_3_find_matches(a) for a in alerts]
+        final_results: list[dict[str, Any]] = await asyncio.gather(*tasks)
+        
+        html_report = self.generate_email_html(final_results)
+        # Send Email Logic here...
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import asyncio
+import logging
+from datetime import datetime, timedelta, UTC
 from typing import Any, Dict, List, Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient
