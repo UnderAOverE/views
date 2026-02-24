@@ -1,65 +1,26 @@
-import urllib.parse
-import json
+https://2.wlb2:8090 | Database Monitoring |*|*|*| -> Params: {'time-range-type': 'BEFORE_NOW', 'duration-in-mins': '60', 'output': 'json'}
+https://3.wlb2:8090 | Database Monitoring |*|*|*| -> Params: {'time-range-type': 'BEFORE_NOW', 'duration-in-mins': '60', 'output': 'json'}
+https://3.wlb2:8090 | Database Monitoring |*|*|*| -> Params: {'time-range-type': 'BEFORE_NOW', 'duration-in-mins': '15', 'output': 'json'}
+https://3.wlb2:8090 | Database Monitoring |*|*|*| -> Params: {'time-range-type': 'BEFORE_NOW', 'duration-in-mins': '10', 'output': 'json'}
+https://4.wlb2:8090 | Database Monitoring |*|*|*| -> Params: {'time-range-type': 'BEFORE_NOW', 'duration-in-mins': '15', 'output': 'json'}
 
-def parse_appd_queries(urls):
-    parsed_results = []
+https://prod-1:8090 | 169608_FDR_PARTNER_GEMFIRE_V9_NAM_PRD | GEMFIRE | Individual Nodes | JMX | Gemfire_System_Distributed |
+-> Params: {'time-range-type': 'BEFORE_NOW', 'duration-in-mins': '60', 'output': 'json'}
 
-    for url in urls:
-        # 1. Parse the URL components
-        parsed_url = urllib.parse.urlparse(url)
-        
-        # 2. Extract Controller Info
-        controller = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        
-        # 3. Extract Application Name from path
-        # Path is usually /controller/rest/applications/AppName/metric-data
-        path_parts = parsed_url.path.split('/')
-        app_name = "Unknown"
-        if 'applications' in path_parts:
-            app_idx = path_parts.index('applications')
-            if len(path_parts) > app_idx + 1:
-                app_name = path_parts[app_idx + 1]
+https://prod-1:8090 | 169608_FDR_PARTNER_GEMFIRE_V9_NAM_PRD | GEMFIRE | Individual Nodes | JMX | Gemfire_System_Distributed |
+-> Params: {'time-range-type': 'BEFORE_NOW', 'duration-in-mins': '15', 'output': 'json'}
 
-        # 4. Extract Query Parameters (Time ranges, etc.)
-        query_params = urllib.parse.parse_qs(parsed_url.query)
-        
-        # 5. Handle Metric Path specifically
-        metric_paths = query_params.get('metric-path', [])
-        
-        # Clean up the parameters dictionary for "remainder" info
-        # We remove metric-path so it's not duplicated
-        remainder_params = {k: v[0] if len(v) == 1 else v for k, v in query_params.items() if k != 'metric-path'}
+https://prod-1:8090 | 171532_DIGITALNEXGEN-IBS_GTDC_NAM_PRD | GEMFIRE | Individual Nodes | sd-6ab3-cabc | JMX |
+-> Params: {'time-range-type': 'BEFORE_NOW', 'duration-in-mins': '60', 'output': 'json'}
 
-        for mp in metric_paths:
-            # Example: Databases|MyDatabase|KPI|Calls per Minute
-            parts = mp.split('|')
-            
-            db_name = parts[1] if len(parts) > 1 else "N/A"
-            category = parts[2] if len(parts) > 2 else "N/A"
-            metric_detail = "|".join(parts[3:]) if len(parts) > 3 else "All (*)"
+https://prod-1:8090 | 114564_DigitalNexgen-MBOL_GTDC_NAM_PRD | GEMFIRE | Individual Nodes | sd-89da-e708 | JMX |
+-> Params: {'time-range-type': 'BEFORE_NOW', 'duration-in-mins': '60', 'output': 'json'}
 
-            parsed_results.append({
-                "Controller": controller,
-                "Application": urllib.parse.unquote(app_name),
-                "Database": db_name,
-                "Metric_Category": category,
-                "Metric_Name": metric_detail,
-                "Other_Params": remainder_params
-            })
+https://prod-1:8090 | 166958_FUSION_CONSUMER_V9_NAM_PRD | GEMFIRE | Individual Nodes | JMX |
+-> Params: {'time-range-type': 'BEFORE_NOW', 'duration-in-mins': '120', 'output': 'json'}
 
-    return parsed_results
+https://8.cloudgs:8090 | 171532_DIGITALNEXGEN-IBS_SWDC_NAM_PRD | GEMFIRE | Individual Nodes | sd-vu2-col1 | JMX |
+-> Params: {'time-range-type': 'BEFORE_NOW', 'duration-in-mins': '60', 'output': 'json'}
 
-# --- EXAMPLE USAGE ---
-queries = [
-    "https://my-company.saas.appdynamics.com/controller/rest/applications/E-Commerce-App/metric-data?metric-path=Databases%7CProduction_DB%7CPerformance%7C*&time-range-type=BEFORE_NOW&duration-in-mins=60&output=json",
-    "https://my-company.saas.appdynamics.com/controller/rest/applications/E-Commerce-App/metric-data?metric-path=Databases%7CProduction_DB%7CKPI%7CCalls%20per%20Minute&time-range-type=BEFORE_NOW&duration-in-mins=15&output=json"
-]
-
-results = parse_appd_queries(queries)
-
-# Nice Output Formatting
-print(f"{'CONTROLLER':<40} | {'APP':<15} | {'DB NAME':<15} | {'CATEGORY':<12} | {'METRIC'}")
-print("-" * 120)
-for r in results:
-    print(f"{r['Controller']:<40} | {r['Application']:<15} | {r['Database']:<15} | {r['Metric_Category']:<12} | {r['Metric_Name']}")
-    print(f"   -> Params: {r['Other_Params']}\n")
+https://8.cloudgs:8090 | 114564_DIGITALNEXGEN-MBOL_SWDC_NAM_PRD | GEMFIRE | Individual Nodes | sd-57f4-db4e | JMX |
+-> Params: {'time-range-type': 'BEFORE_NOW', 'duration-in-mins': '60', 'output': 'json'}
