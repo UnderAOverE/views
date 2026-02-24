@@ -1,95 +1,65 @@
-import asyncio
-import time
-from random import uniform
-from typing import List, Awaitable
+import urllib.parse
+import json
 
-# A queue to hold our tasks (coroutines)
-WORK_QUEUE = asyncio.Queue()
+def parse_appd_queries(urls):
+    parsed_results = []
 
-async def producer(tasks: List[Awaitable]):
-    """
-    Adds a list of coroutines (tasks) to the work queue.
-    """
-    for task in tasks:
-        await WORK_QUEUE.put(task)
-    print(f"Producer finished. Added {len(tasks)} tasks to the queue.")
+    for url in urls:
+        # 1. Parse the URL components
+        parsed_url = urllib.parse.urlparse(url)
+        
+        # 2. Extract Controller Info
+        controller = f"{parsed_url.scheme}://{parsed_url.netloc}"
+        
+        # 3. Extract Application Name from path
+        # Path is usually /controller/rest/applications/AppName/metric-data
+        path_parts = parsed_url.path.split('/')
+        app_name = "Unknown"
+        if 'applications' in path_parts:
+            app_idx = path_parts.index('applications')
+            if len(path_parts) > app_idx + 1:
+                app_name = path_parts[app_idx + 1]
 
-async def consumer(consumer_id: int):
-    """
-    A worker that gets coroutines from the queue and runs them.
-    """
-    print(f"Consumer {consumer_id} started.")
-    while True:
-        task_coro = await WORK_QUEUE.get()
+        # 4. Extract Query Parameters (Time ranges, etc.)
+        query_params = urllib.parse.parse_qs(parsed_url.query)
+        
+        # 5. Handle Metric Path specifically
+        metric_paths = query_params.get('metric-path', [])
+        
+        # Clean up the parameters dictionary for "remainder" info
+        # We remove metric-path so it's not duplicated
+        remainder_params = {k: v[0] if len(v) == 1 else v for k, v in query_params.items() if k != 'metric-path'}
 
-        try:
-            # Run the coroutine we got from the queue
-            await task_coro
-        except asyncio.CancelledError:
-            # Re-raise the cancellation error to allow for proper shutdown
-            raise
-        except Exception as e:
-            print(f"Consumer {consumer_id} failed on a task: {e}")
-        finally:
-            # Always call task_done() whether the task succeeded or failed
-            WORK_QUEUE.task_done()
-            print(f"Consumer {consumer_id} finished a task. Queue size: {WORK_QUEUE.qsize()}")
+        for mp in metric_paths:
+            # Example: Databases|MyDatabase|KPI|Calls per Minute
+            parts = mp.split('|')
+            
+            db_name = parts[1] if len(parts) > 1 else "N/A"
+            category = parts[2] if len(parts) > 2 else "N/A"
+            metric_detail = "|".join(parts[3:]) if len(parts) > 3 else "All (*)"
 
+            parsed_results.append({
+                "Controller": controller,
+                "Application": urllib.parse.unquote(app_name),
+                "Database": db_name,
+                "Metric_Category": category,
+                "Metric_Name": metric_detail,
+                "Other_Params": remainder_params
+            })
 
-# main_app.py
+    return parsed_results
 
-import asyncio
-import aiohttp
-import time
-from worker_pool import producer, consumer, WORK_QUEUE
+# --- EXAMPLE USAGE ---
+queries = [
+    "https://my-company.saas.appdynamics.com/controller/rest/applications/E-Commerce-App/metric-data?metric-path=Databases%7CProduction_DB%7CPerformance%7C*&time-range-type=BEFORE_NOW&duration-in-mins=60&output=json",
+    "https://my-company.saas.appdynamics.com/controller/rest/applications/E-Commerce-App/metric-data?metric-path=Databases%7CProduction_DB%7CKPI%7CCalls%20per%20Minute&time-range-type=BEFORE_NOW&duration-in-mins=15&output=json"
+]
 
-# Define the number of consumers we want to use
-NUM_CONSUMERS = 100
+results = parse_appd_queries(queries)
 
-async def my_async_task(task_id: int, url: str):
-    """
-    A sample async coroutine to demonstrate the pattern.
-    This can be anything: a web request, database query, etc.
-    """
-    # Simulate some work
-    await asyncio.sleep(uniform(0.1, 1.0))
-    print(f"Task {task_id} is fetching {url}")
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            await response.text()
-    print(f"Task {task_id} completed.")
-
-async def main():
-    # A list of thousands of different async coroutines
-    tasks_to_run = [
-        my_async_task(i, f"http://httpbin.org/delay/{i % 5}")
-        for i in range(2000)
-    ]
-    
-    # Start the producer and consumer tasks
-    producer_task = asyncio.create_task(producer(tasks_to_run))
-    consumer_tasks = [asyncio.create_task(consumer(i)) for i in range(NUM_CONSUMERS)]
-    
-    start_time = time.monotonic()
-    
-    # Wait for the producer to finish putting items in the queue
-    await producer_task
-    
-    # Wait for all tasks in the queue to be completed
-    await WORK_QUEUE.join()
-    
-    # Cancel the consumer tasks to shut them down gracefully
-    for task in consumer_tasks:
-        task.cancel()
-    
-    # Await the cancelled tasks to ensure they've fully shut down
-    await asyncio.gather(*consumer_tasks, return_exceptions=True)
-
-    end_time = time.monotonic()
-    print(f"All {len(tasks_to_run)} tasks processed in {end_time - start_time:.2f} seconds.")
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-
-
+# Nice Output Formatting
+print(f"{'CONTROLLER':<40} | {'APP':<15} | {'DB NAME':<15} | {'CATEGORY':<12} | {'METRIC'}")
+print("-" * 120)
+for r in results:
+    print(f"{r['Controller']:<40} | {r['Application']:<15} | {r['Database']:<15} | {r['Metric_Category']:<12} | {r['Metric_Name']}")
+    print(f"   -> Params: {r['Other_Params']}\n")
