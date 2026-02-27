@@ -1,107 +1,111 @@
-import asyncio
+async def _find_matches(self, alert: dict[str, Any],) -> dict[str, Any]:
+    matches = []
+    seen_match_serials = set()
+    unique_identifier = f"{alert['distinguished_name']} | {alert['serial_number']}"
 
-async def flatten_clusters_by_namespace(clusters: list[dict]) -> list[dict]:
-    """
-    Asynchronously flattens a list of clusters, replicating cluster information
-    for each namespace within the 'namespaces' list.
+    logger.debug(f"Finding matches for with DN: {alert['distinguished_name']} and SN: {alert['serial_number']}")
 
-    Args:
-        clusters: A list of dictionaries, where each dictionary represents a cluster
-                  and contains a 'namespaces' key (list[str]).
+    @lru_cache(maxsize=1000)
+    def _clean_string(text: str, ) -> str:
+        match = re.search(pattern=r"CN=([^,]+)", string=text, flags=re.IGNORECASE,)
+        if match:
+            text = match.group(1)
 
-    Returns:
-        A new list of dictionaries, where each original cluster entry is replicated
-        for each of its namespaces, with 'namespace' as a new key.
-    """
-    flattened_list = []
+        text = text.casefold()
+        for word in self.cm_settings.noise_words:
+            text = text.replace(word, "")
 
-    async def process_single_cluster(cluster_data):
-        cluster_name = cluster_data.get("name")
-        account_id = cluster_data.get("account_id")
-        region = cluster_data.get("region")
-        environment = cluster_data.get("environment")
-        namespaces = cluster_data.get("namespaces", [])
+        # Replace punctuation with spaces to help Token matching
+        text = text.replace(".", " ").replace("-", " ").replace("_", " ")
+        return text.strip()
 
-        if not namespaces:
-            # If no namespaces, just add the cluster data without a namespace key
-            # or handle as per specific requirement (e.g., skip it)
-            new_entry = {
-                "name": cluster_name,
-                "account_id": account_id,
-                "region": region,
-                "environment": environment,
-                "namespace": None # Or remove this key if no namespace is desired
-            }
-            return [new_entry]
+    certificates_batch = self.consolidated_data_repository.find_valid_certificates_based_on_environments(
+        self.cm_settings.environments_to_monitor,
+        self.cm_settings.log_date_threshold,
+        self.cm_settings.expiry_threshold,
+        self.cm_settings.validity_threshold,
+    )
 
-        # Create a list of new entries for each namespace
-        namespace_entries = []
-        for namespace in namespaces:
-            new_entry = {
-                "name": cluster_name,
-                "account_id": account_id,
-                "region": region,
-                "environment": environment,
-                "namespace": namespace,
-            }
-            namespace_entries.append(new_entry)
-        return namespace_entries
+    batch_idx = 0
+    stop_finding: bool = False
 
-    # Create a list of tasks for processing each cluster concurrently
-    tasks = [process_single_cluster(cluster) for cluster in clusters]
-    
-    # Gather all results. Each result from process_single_cluster is a list of dictionaries.
-    results = await asyncio.gather(*tasks)
+    try:
+        async for batch in certificates_batch:
+            batch_idx += 1
+            logger.info(f"{unique_identifier}: processing batch {batch_idx} ({len(batch)} certificates)")
 
-    # Flatten the list of lists into a single list
-    for sublist in results:
-        flattened_list.extend(sublist)
+            if stop_finding:
+                logger.warning(f"{unique_identifier}: stopping further batch processing as we already found 3 matches.")
+                break
 
-    return flattened_list
+            try:
+                for matched_certificate in batch:
+                    match_sn = matched_certificate.source_properties.serial_number
+                    # Skip if it's the same certificate as the expiring one, or we already picked it
+                    if match_sn == alert["serial_number"] or match_sn in seen_match_serials:
+                        continue
 
-# Example Usage:
-async def main():
-    clusters_data = [
-        {
-            "name": "cluster-1",
-            "account_id": "123",
-            "region": "us-east-1",
-            "environment": "dev",
-            "namespaces": ["ns-a", "ns-b", "ns-c"],
-        },
-        {
-            "name": "cluster-2",
-            "account_id": "456",
-            "region": "us-west-2",
-            "environment": "prod",
-            "namespaces": ["ns-x", "ns-y"],
-        },
-        {
-            "name": "cluster-3",
-            "account_id": "789",
-            "region": "eu-central-1",
-            "environment": "test",
-            "namespaces": [], # Cluster with no namespaces
-        },
-        {
-            "name": "cluster-4",
-            "account_id": "101",
-            "region": "ap-south-1",
-            "environment": "dev",
-            "namespaces": ["ns-p"],
-        },
-    ]
+                    # Pre-process both strings
+                    s1 = _clean_string(alert["distinguished_name"])
+                    s2 = _clean_string(matched_certificate.distinguished_name)
 
-    print("--- Original Clusters ---")
-    for cluster in clusters_data:
-        print(cluster)
-    print("\n")
+                                       # 3. Calculate both ratios
+                    partial_score = fuzz.partial_ratio(s1, s2)
+                    token_score = fuzz.token_sort_ratio(s1, s2)
 
-    print("--- Flattened Clusters ---")
-    flattened_clusters = await flatten_clusters_by_namespace(clusters_data)
-    for entry in flattened_clusters:
-        print(entry)
-    print("\n")
+                    # 4. Combine the scores with weights (you can adjust the weights as needed)
+                    # This is to avoid situations like "prod.crmngacyberark.company.com" vs "company.com" getting a high score just because the shorter one is fully contained in the longer one
+                    len1, len2 = len(s1), len(s2)
+                    length_ratio = min(len1, len2) / max(len1, len2)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+                    # If the partial score is very high but token score is low and length ratio is low, it indicates a case where one string is fully contained in the other, but they are of very different lengths
+                    # in that case. Otherwise, we can use a weighted average.
+                    score = max((partial_score * 0.8 + token_score * 0.2), token_score)
+                    if partial_score > 95 and token_score < 40 and length_ratio < 0.3:
+                        score = token_score
+
+                    if score >= (self.cm_settings.distinguished_name_similarity_ratio * 100):
+                        seen_match_serials.add(match_sn)
+                        note: str = ""
+                        if matched_certificate.csi_application_id != alert["csi_id"]:
+                            note = f" (CSI Mismatch)"
+
+                        logger.info(f"{unique_identifier}: found match with possible candidate SN: {match_sn} and score: {score:.2f}% {note}")
+                        matches.append(
+                            {
+                                "distinguished_name": matched_certificate.distinguished_name + note,
+                                "days_to_expiration": matched_certificate.days_to_expiration,
+                                "expiration_date": matched_certificate.expiration_date,
+                                "serial_number": matched_certificate.source_properties.serial_number,
+                                "similarity_score": round(score, 2),
+                                "csi_application_id": matched_certificate.csi_application_id,
+                                "ssl_cm_status": matched_certificate.source_properties.ssl_cm_status,
+                            }
+                        )
+
+                    # Fetch only up to 3 matches if they are all very high similarity (likely renewals), but if the similarity scores are lower (could be related but not necessarily renewals), then we can
+                    # report, up to 6. This is to ensure we don't miss out on showing potential matches that might have slightly lower similarity but could still be relevant, while also keeping the report...
+                    if all(float(m.get("similarity_score", 0.0)) == float(100) for m in matches):
+                        if len(matches) >= 3:
+                            stop_finding = True
+                            break
+
+                else:
+                    if len(matches) >= 6:
+                        stop_finding = True
+                        break
+
+            except Exception as batch_error:
+                logger.error(f"{unique_identifier}: batch {batch_idx}: {batch_error}")
+                continue  # Keep going with next batch
+
+    except Exception as generic_exception:
+        logger.error(f"{unique_identifier}: critical streaming error: {repr(generic_exception)}")
+
+    # Ensure sorted by date and limited to 3
+    top_3_by_score = sorted(matches, key=lambda x: x["similarity_score"], reverse=True,)[:3]
+    top_hits = sorted(top_3_by_score, key=lambda x: x["expiration_date"], reverse=True,)
+    alert["certificates_match"] = top_hits
+
+    return alert
+
