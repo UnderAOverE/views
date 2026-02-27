@@ -1,3 +1,144 @@
+class BaseReadMotorRepository[T](ABC):
+    async def find_many_paginated_seek(
+            self,
+            base_filter_query: MongoDocument,
+            sort_field: str,
+            batch_size: int,
+            last_seen_value: Any | None = None,
+            sort_order: int = ASCENDING,
+            projection: MongoDocument | None = None,
+            collation: Collation | None = None,
+    ) -> AsyncGenerator[list[T], None]:
+
+        """
+        Finds multiple documents using seek pagination. This method is suitable for collections with mo
+
+        :param base_filter_query: The base filter query to apply.
+        :type base_filter_query: MongoDocument
+        :param sort_field: The field to sort by.
+        :type sort_field: str
+        :param batch_size: The number of documents to return in each batch.
+        :type batch_size: int
+        :param last_seen_value: The last seen value for pagination. If None, starts from the beginning.
+        :type last_seen_value: Any | None
+        :param sort_order: The sort order (ASCENDING or DESCENDING).
+        :type sort_order: int
+        :param projection: Optional projection to apply.
+        :type projection: MongoDocument | None
+        :param collation: Optional collation to apply.
+        :type collation: Collation | None
+        :return: An async generator yielding lists of documents in batches.
+        :rtype: AsyncGenerator[list[T], None]
+        """
+
+        if batch_size <= 0:
+            raise ValueError("Batch size must be greater than 0.")
+
+        # endIf
+
+        if sort_order not in [ASCENDING, DESCENDING,]:
+            raise ValueError("sort_order must be ASCENDING or DESCENDING")
+
+        # endIf
+
+        current_filter = base_filter_query.copy()
+        _last_seen_value = last_seen_value
+
+        while True:
+
+            iter_filter = current_filter.copy()  # Use a copy for each iteration's
+            if _last_seen_value is not None:
+
+                if sort_order == ASCENDING:
+                    iter_filter[sort_field] = {"$gt": _last_seen_value,}
+                else:
+                    iter_filter[sort_field] = {"$lt": _last_seen_value,}
+
+                # endIfElse
+
+            # endIf
+
+            try:
+                docs_batch = await self._execute_find_many(
+                    filter_query=iter_filter,
+                    projection=projection,
+                    sort=[(sort_field, sort_order,),],
+                    limit=batch_size,
+                    collation=collation,
+                )
+
+                if not docs_batch:
+                    break
+
+                # endIf
+
+                if projection is None:
+                    models_batch = [self._read_map_to_model(doc) for doc in docs_batch]
+                    yield models_batch
+
+                else:
+                    yield docs_batch
+
+                # endIfElse
+
+                _last_seen_value = docs_batch[-1].get(sort_field)
+
+                if _last_seen_value is None:
+                    # print(f"Warning: Sort field '{sort_field}' missing in last doc of batch. Stopping seek for {self._collection_name}.")
+                    break
+
+                # endIf
+
+            except Exception as generic_exception:
+                raise RuntimeError(f"Error in find_many_paginated_seek for {self._collection_name}, exception: {repr(generic_exception)}")
+                # break
+
+            # endTryExcept
+
+        # endWhile
+
+
+class CMConsolidatedDataMotorRepository(BaseReadMotorRepository[CMConsolidatedDataModel]):
+    async def find_valid_certificates_based_on_environments(
+            ...
+    ):
+        """
+        :type expiry_threshold: int
+        :param validity_threshold: The maximum number of days to expiration for the certificates.
+        :type validity_threshold: int
+        :return: Async generator yielding lists of CMConsolidatedDataModel instances in batches.
+        :rtype: AsyncGenerator[list[CMConsolidatedDataModel], None]
+        """
+
+        base_query = {
+            # "csi_application_id": alert["csi_id"],
+            "status": Constants.valid.capitalize(),
+            "source_properties.environment": {
+                "$in": environments,
+            },
+            # Ignore signers: only look for certs with > current days but < validity_threshold da
+            "days_to_expiration": {
+                "$gt": expiry_threshold,
+                "$lt": validity_threshold,
+            },
+            "log_date": {
+                "$gte": datetime.now(timezone.utc) - timedelta(days=log_date_threshold),
+            },
+        }
+
+        async for batch in self.find_many_paginated_seek(
+                base_filter_query=base_query,
+                sort_field="_id",
+                batch_size=100000,
+        ):
+            yield batch
+
+        # endAsyncFor
+
+    # endAsyncDef
+
+
+
 async def _find_matches(self, alert: dict[str, Any],) -> dict[str, Any]:
     matches = []
     seen_match_serials = set()
