@@ -96,3 +96,31 @@ Adanced version
 
 
 
+
+Hybrid
+
+                        ALERTS DATAFRAME
+                               │
+                               ▼
+                     Normalize Strings (Polars)
+                               │
+                               ▼
+                     Group Alerts (Custom Strategy)
+                               │
+          ┌────────────────────┼────────────────────┐
+          ▼                    ▼                    ▼
+       Group A              Group B              Group C
+    (api-prod-*)         (db-test-*)           (others)
+          │                    │                    │
+          ▼                    ▼                    ▼
+   Prefilter Candidates   Prefilter Candidates   Prefilter
+      (Polars)               (Polars)              (Polars)
+          │                    │                    │
+          ▼                    ▼                    ▼
+      cdist Batch          cdist Batch         cdist Batch
+    (Medium Matrix)      (Medium Matrix)     (Medium Matrix)
+          │                    │                    │
+          └────────────── Merge Best Matches ───────────────┘
+                               │
+                               ▼
+                        Final Results DF
