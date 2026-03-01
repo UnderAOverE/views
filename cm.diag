@@ -1,0 +1,98 @@
+                ┌────────────────────────────┐
+                │   Actionable Alerts        │
+                │   (Expiring Certificates)  │
+                └──────────────┬─────────────┘
+                               │
+                               ▼
+                    Deduplicate by Serial
+                               │
+                               ▼
+        ┌─────────────────────────────────────────┐
+        │ Load Candidates from Mongo (ONCE)      │
+        │  • Seek Pagination                     │
+        │  • No skip/offset                      │
+        │  • No parallel cursors                 │
+        └─────────────────────────────────────────┘
+                               │
+                               ▼
+              ┌────────────────────────────────┐
+              │ Polars DataFrame (In Memory)  │
+              │  Columns:                     │
+              │   - distinguished_name        │
+              │   - cleaned_dn  ← precomputed │
+              │   - serial_number             │
+              │   - expiration_date           │
+              └────────────────────────────────┘
+                               │
+                               ▼
+          For Each Alert (controlled by Semaphore)
+                               │
+                               ▼
+       ┌─────────────────────────────────────┐
+       │ Polars Pre-Filter (Vectorized)     │
+       │  - Remove same serial              │
+       │  - Prefix narrowing                │
+       │  (Runs in Rust engine)             │
+       └─────────────────────────────────────┘
+                               │
+                               ▼
+       ┌─────────────────────────────────────┐
+       │ RapidFuzz process.cdist            │
+       │  - Bulk similarity scoring         │
+       │  - Executed in C                   │
+       │  - No Python loop                  │
+       └─────────────────────────────────────┘
+                               │
+                               ▼
+                      Rank & Return Top 3
+
+
+
+
+
+
+
+Adanced version
+
+                ┌────────────────────────────┐
+                │   Actionable Alerts        │
+                └──────────────┬─────────────┘
+                               │
+                               ▼
+                  Deduplicate + Clean ALL
+                               │
+                               ▼
+         ┌──────────────────────────────────┐
+         │ Build List of Cleaned Alerts     │
+         │  [alert1_cleaned, alert2_cleaned │
+         │   alert3_cleaned, ...]           │
+         └──────────────────────────────────┘
+                               │
+                               ▼
+        ┌────────────────────────────────────────┐
+        │ Load Candidates ONCE into Polars      │
+        │  + precomputed cleaned_dn             │
+        └────────────────────────────────────────┘
+                               │
+                               ▼
+        ┌────────────────────────────────────────┐
+        │ Polars Pre-filter (vectorized)        │
+        │  (optional grouping logic)            │
+        └────────────────────────────────────────┘
+                               │
+                               ▼
+        ┌────────────────────────────────────────┐
+        │ ONE process.cdist CALL                │
+        │                                       │
+        │  queries  = all_alert_cleaned         │
+        │  choices  = cleaned_candidates        │
+        │                                       │
+        │  Result = N x M score matrix         │
+        └────────────────────────────────────────┘
+                               │
+                               ▼
+                Post-process per alert
+                Rank & select top matches
+
+
+
