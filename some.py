@@ -44,3 +44,62 @@ What I am trying to achieve is to aleert the support teams, hey look there is a 
 Is there any way we can perform a string compariuson or word closeness comparison to see if the "distinguished_name" matches (or closily resembles) inside the list so that we know there a possible chance that expiring cert is renewed? you know what I mean? and based on that result maybe add a new field to highlight this needs attention or something?
 
 Provide me all the quired indexes I need to have for the source collection and targetr colleciton.
+
+
+
+{
+  "distinguished_name": "CN=rfa.afore.mexico.chase.net",
+  "start_date": {
+    "$date": "2025-05-15T01:03:33.000Z"
+  },
+  "expiration_date": {
+    "$date": "2027-05-15T01:03:33.000Z"
+  },
+  "csi_application_id": 154958,
+  "status": "Valid",
+  "days_to_expiration": 436,
+  "source_properties": {
+    "name": "SSG",
+    "serial_number": "690020648AD382F1E1E02AFD0F00000020648A",
+    "certificate_type": "null",
+    "certificate_owner": "null",
+    "certificate_name": "null",
+    "owner_email": "null",
+    "support_group": "null",
+    "support_group_email": "null",
+    "application_manager": "null",
+    "l3_application_head": "null",
+    "l4_application_head": "null",
+    "environment": "PROD",
+    "evolven_host": "null",
+    "evolven_path": "null",
+    "ssg_domain": "sogateway.retail.chase.net",
+    "ssg_url_in": "http://127.10.10.2:6238/afore-qaid/ApiACB/TOKEN",
+    "ssg_url_out": "https://GCB-AforeBNMX-QAID-154958-LBG/ApiACB/TOKEN",
+    "internal_ssg_domain": "RetailApplication",
+    "ssg_url": "/afore-qaid/ApiACB/TOKEN",
+    "san_names": "null",
+    "instance_name": "NDR-GCB-AforeBNMX-Banxico-154958-ACL,NDR-GCB-AforeBNMX-Bloomberg-154958-ACL,NDR-GCB-AforeBNMX-QAID-154958-ACL,",
+    "microservice_name": "GCB-AforeBNMX-QAID-154958",
+    "openshift_namespace": "null",
+    "openshift_container": "null",
+    "ssl_cm_region": "LATM",
+    "ssl_cm_sector": "LF-MEX",
+    "ssl_cm_status": "null",
+    "lob_domain": "",
+    "TechnologyManagedSegment_L6": "LF - Other Retail Banking [L6]",
+    "TechnologyManagedSegment_L7": "LF - PBWM O&T and Fraud [L7]",
+    "ApplicationManager": "",
+    "ApplicationManager_soeid": "",
+    "Level3Head": "",
+    "Level4Head": "",
+    "Level5Head": "",
+    "SupportManager": "",
+    "Domain": "",
+    "SubDomain": "",
+    "LOB": ""
+  },
+  "log_date": {
+    "$date": "2026-03-04T17:42:16.618Z"
+  }
+}
