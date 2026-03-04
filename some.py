@@ -2,6 +2,24 @@ Here I have 5 million records inside my source collection (Certificates) like be
 '''
 "cn","US","See2a6c9f6542a4736ffb76516bfe3",7,2026-03-09T00:00:00.000000+0000,170644,Activated,SSL Tracker,null,null,null,null,null,null,null,null
 "cn","US","See2a6c9f6542a4736ffb76516bfe3",7,2026-03-09T00:00:00.000000+0000,178961,null,HashiCorp,namgcbgtd42p_gcb-nam-iam-ccp-178961_gtlecsprod-xlg-sct-p-sts-ob-canary,null,null,null,null,null,N/A,null
+
+
+
+cbnasalesforceprod.chasebank.com,0d104880343fb3f6b8ffbc00b8ae0390a,15,2026-03-20T00:00:00.000000+0000,18550,Retired,SSL Tracker,null,null,null,null,null,null,null,null
+cbnasalesforceprod.chasebank.com,07f738d5bf0766b0c1306b6850d57f1f8,314,2027-01-19T00:00:00.000000+0000,163016,Retired,SSL Tracker,null,null,null,null,null,null,null,null
+cbnasalesforceprod.chasebank.com,0dce0db3bd10080c880acc13aad1a54d,330,2027-01-29T00:00:00.000000+0000,163016,Retired,SSL Tracker,null,null,null,null,null,null,null,null
+cbnasalesforceprod.chasebank.com,07da4c7cd6d0957e2023896bfc4cb49cb,355,2027-02-23T00:00:00.000000+0000,176550,Retired,SSL Tracker,null,null,null,null,null,null,null,null
+cbnasalesforceprod.chasebank.com,0dce0db3bd10080c880acc13aad1a54d,331,2027-01-29T23:59:59.000000+0000,null,VALCRED,,,,,,,
+cbnasalesforceprod.chasebank.com,0dce0db3bd10080c880acc13aad1a54d,331,2027-01-29T23:59:59.000000+0000,null,VALCRED,,,,,,,
+http://127.10.10.1:7750/idoc/service/
+https://chaseriskcommercialidoc.wlb2.nam.nsroot.net/idoc/service/secure/SF/requirement/v3/submit
+
+GCG-CBNA-SalesForce-ACL,"SGGOutboundApplicationDomain,/idoc/*"
+GCG-SalesForce-Sign-ACL,"GCGApplicationDomain,/idoc/*"
+GCG-CBNARetail-SalesForce-169883-ACL,"SGGOutboundApplicationDomain,/idoc/*"
+
+
+
 '''
 ```
 {"distinguished_name":"171384.boss.dev","start_date":"null","expiration_date":{"$date":"2027-03-11T00:00:00.000Z"},"csi_application_id":171384,"status":"Valid","days_to_expiration":546,"source_properties":{"name":"HashiCorp","serial_number":"690002ee5bd989e475c9d4e3fa00000002ee5b","certificate_type":"jks","certificate_owner":"null","certificate_name":"null","owner_email":"null","support_group":"null","support_group_email":"null","application_manager":"null","l3_application_head":"null","l4_application_head":"null","environment":"DEV","evolven_host":"null","evolven_path":"null","ssg_domain":"null","ssg_url_in":"null","ssg_url_out":"null","internal_ssg_domain":"null","ssg_url":"null","san_names":"null","instance_name":"N/A","microservice_name":"namcgbgtd25d_gcb-nam-wmt-retail-171384_gtlecsdev3-pdm-o-accountlinking-usretail","openshift_namespace":"null","openshift_container":"null","ssl_cm_region":"NAM","ssl_cm_sector":"PBWM","ssl_cm_status":"null","lob_domain":"NAM_Core","TechnologyManagedSegment_L6":"USPB Technology [L6]","TechnologyManagedSegment_L7":"Digital [L7]","ApplicationManager":"XXXXXX","ApplicationManager_soEid":"XXXXXX","Level3Head":"XXXXXX","Level4Head":"XXXXXX","Level5Head":"XXXXXX","SupportManager":"XXXXXX","Domain":"NAM_Core","SubDomain":"Assisted Channels","LOB":"RETAIL"},"log_date":{"$date":"2025-09-10T06:33:13.311Z"}}
