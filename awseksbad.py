@@ -1,46 +1,93 @@
-class EKSService:
-    # ...
-
-    def _get_eks_token(account_id: str, session: boto3.Session, cluster_name: str, region: str,) -> str | None:
-        """
-        :param cluster_name: The name of the EKS cluster.
-        :type cluster_name: str
-        :param region: The AWS region where the EKS cluster is located.
-        :type region: str
-        :return: A base64-encoded EKS authentication token.
-        :rtype: str | None
-        """
-
-        logger.debug(
-            f" EKSService._get_eks_token generating token for account_id={account_id}, "
-            f"cluster={cluster_name}, region={region}",
-            extra={"version": module_version,}
-        )
-
-        client = session.client(ApplicationConstants.AWSServiceName)
-        signer = client._request_signer  # already a RequestSigner
-
-        params = {
-            "method": "GET",
-            "url": (
-                f"https://{ApplicationConstants.AWSServiceName}.{region}.amazonaws.com/"
-                "?Action=GetCallerIdentity&Version=2011-06-15"
-            ),
-            "body": {},
-            "headers": {
-                "x-k8s-aws-id": cluster_name,
-            },
-            "context": {},
+{
+  "_comment": "NAM Sales Splunk: hosts, ports, FIDs & connection details",
+  "sector": "Sales",
+  "region": "NAM",
+  "environments": [
+    {
+      "name": "production",
+      "server_port_pairs": "splunk-search-rest.wlb.net:8089",
+      "fid_details": [
+        {
+          "name": "aichat",
+          "decrypter_key": "xxx",
+          "decrypter_token": "xxx"
+        },
+        {
+          "name": "aichat_digital",
+          "decrypter_key": "xxx",
+          "decrypter_token": "xxx"
+        },
+        {
+          "name": "aichat_dna",
+          "decrypter_key": "xxx",
+          "decrypter_token": "xxx"
         }
+      ],
+      "search_heads": [
+        "10.3.179.182",
+        "10.3.179.183",
+        "10.18.104.179",
+        "10.50.246.81",
+        "10.50.246.88",
+        "10.95.178.148"
+      ],
+      "ssl": {
+        "ca_certs": "lib/ca-prod.pem",
+        "enable": true
+      }
+    },
+    {
+      "name": "warehouse-production",
+      "server_port_pairs": "splunk-search-warehouse.wlb.net:8089",
+      "fid_details": [
+        {
+          "name": "aichat",
+          "decrypter_key": "xxx",
+          "decrypter_token": "xxx"
+        }
+      ]
+    }
+  ]
+}
 
-        # NOTE: pass operation_name=None
-        presigned_url = signer.generate_presigned_url(
-            request_dict=params,
-            expires_in=60,
-            operation_name=None,
-        )
 
-        return (
-            ApplicationConstants.KubernetesTokenIdentifier
-            + base64.urlsafe_b64encode(presigned_url.encode()).decode().rstrip("=")
-        )
+{
+  "controller": {
+    "name": "GCG-NA-PRD1",
+    "sector": "Sales",
+    "region": "NAM",
+    "environment": "production",
+    "enable": true,
+    "url": "https://appdyn-nam-gcg-prod-1.net",
+    "account": "customer1",
+    "oauth2": {
+      "method": "POST",
+      "port": 8090,
+      "headers": {
+        "Content-Type": "application/vnd.appd.cntrl+protobuf",
+        "v": "1"
+      },
+      "path": "controller/api/oauth/access_token",
+      "credentials": {
+        "aichat_namcore": {
+          "secret_key": "xxx",
+          "secret_token": "xxx",
+          "bearer_token": "xxx",
+          "bearer_token_expiration": {
+            "$date": "2026-04-21T00:30:07.832Z"
+          }
+        },
+        "aichat": {
+          "secret_key": "xxx",
+          "secret_token": "xxx",
+          "bearer_token": "xxx",
+          "bearer_token_expiration": {
+            "$date": "2026-04-21T00:30:07.862Z"
+          }
+        }
+      }
+    },
+    "timeout": 60
+  }
+}
+
