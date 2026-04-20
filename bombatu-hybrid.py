@@ -1,3 +1,43 @@
+class BaseReadMotorRepository(T)(ABC):
+    """
+    BaseReadMotorRepository class: This is a base read repository for MongoDB collections using Motor.
+    It provides methods to perform ONLY read operations on MongoDB collections. Subclasses must define the _collection_name and _database_name attributes.
+    """
+
+    _database_name: str
+    _collection_name: str
+
+    def __init__(self, db_client: AsyncIOMotorClient, base_model: type[T],) -> None:
+        """
+        MotorRepository constructor. Base repository for MongoDB (Motor) collections. Make sure the inheriting class defines _collection_name and _database_name.
+
+        :param db_client: MongoDB client.
+        :type db_client: AsyncIOMotorClient
+        :param base_model: The Pydantic model class representing the documents in the collection.
+        :type base_model: type[T]
+        :return: None
+        :raises NotImplementedError: If the subclass does not define _collection_name or _database_name.
+        """
+
+        if not hasattr(self, "_collection_name") or not self._collection_name:
+            raise NotImplementedError("Subclasses must define _collection_name")
+
+        # endif
+
+        if not hasattr(self, "_database_name") or not self._database_name:
+            raise NotImplementedError("Subclasses must define _database_name")
+
+        # endif
+
+        self.db_client: AsyncIOMotorClient = db_client
+        self.collection: AsyncIOMotorCollection = db_client[self._database_name][self._collection_name]
+        self.base_model = base_model
+
+    # endDef
+
+    def _read_map_to_model(self, doc: MongoDocument,) -> T:
+
+
 class PKPIAppDynamicsMotorRepository(
     BaseReadMotorRepository[PlatformMetricDocument],
     BaseWriteMotorRepository[PlatformMetricDocument]
