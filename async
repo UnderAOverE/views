@@ -1,29 +1,37 @@
-def check_serial_mismatch(records: list[dict], dn_to_check: str, serial_number_to_check: str) -> bool | None:
-    """
-    Filters records by distinguished_name, finds the latest by log_datetime,
-    and checks whether its serial_number mismatches the provided one.
+# ── SplunkFeed ────────────────────────────────────────────────────────────────
 
-    Returns:
-        True  — latest record's serial_number does NOT match (mismatch detected)
-        False — latest record's serial_number matches
-        None  — no records found for the given distinguished_name
-    """
-    matches = [r for r in records if r["distinguished_name"] == dn_to_check]
+SPLUNK_FEED_INDEXES: list[IndexModel] = [
+    # Primary query index — covers the exact filter pattern used in the query.
+    # Field order follows ESR rule (Equality → Sort/Range):
+    #   source_type (eq) → cluster (eq) → project (eq) → service_name (eq)
+    #   → log_datetime (range) → distinguished_name is a regex so goes last.
+    # Note: regex ($regex) fields benefit from an index prefix but cannot be
+    # fully covered — placing it last minimises the scan after the eq fields.
+    IndexModel(
+        keys=[
+            ("source_type", ASCENDING),
+            ("cluster", ASCENDING),
+            ("project", ASCENDING),
+            ("service_name", ASCENDING),
+            ("log_datetime", ASCENDING),
+            ("distinguished_name", ASCENDING),
+        ],
+        name="idx_splunkfeed_query",
+        background=True,
+    ),
+    # TTL index — documents auto-deleted 1 year (365 days) after log_datetime.
+    # expireAfterSeconds = 365 * 24 * 60 * 60 = 31,536,000
+    IndexModel(
+        keys=[("log_datetime", ASCENDING)],
+        name="idx_splunkfeed_log_datetime_ttl",
+        expireAfterSeconds=31_536_000,
+        background=True,
+    ),
+]
 
-    if not matches:
-        return None
 
-    latest = max(matches, key=lambda r: r["log_datetime"])
-
-    return latest["serial_number"] != serial_number_to_check
-
-
-
-result = check_serial_mismatch(records, dn_to_check="dn1", serial_number_to_check="afwer")
-
-if result is None:
-    print("No records found for that distinguished name.")
-elif result:
-    print("Mismatch detected — serial number has changed.")
-else:
-    print("Serial number matches the latest record.")
+await _create_indexes_for_collection(
+    db,
+    "SplunkFeed",
+    SPLUNK_FEED_INDEXES,
+)
