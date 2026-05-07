@@ -1,3 +1,84 @@
+https://appdync-nam-gcg-p2.wlb2.net:8090/controller/rest/applications/Database Monitoring/metric-data
+?metric-path=Databases|*|*|*
+&time-range-type=BEFORE_NOW
+&duration-in-mins=60
+&output=json
+
+{
+    "metricId": 2645900,
+    "metricName": "DB|Server Statistic|user calls",
+    "metricPath": "Databases|168066_WALLET_NAM_PRD(GPDWLTP)|Server Statistic|user calls",
+    "frequency": "ONE_MIN",
+    "metricValues": [
+        {
+            "startTimeInMillis": 1778041200000,
+            "occurrences": 0,
+            "current": 7841,
+            "min": 0,
+            "max": 0,
+            "useRange": false,
+            "count": 180,
+            "sum": 667639,
+            "value": 11127,
+            "standardDeviation": 0
+        }
+    ]
+}
+
+
+https://appdync-nam-gcg-pr3.wlb2.net:8090/controller/rest/applications/175221 Apigee NAM PRD/metric-data
+?metric-path=Application Infrastructure Performance|*|Individual Nodes|*|*|*
+&time-range-type=BEFORE_NOW
+&duration-in-mins=10
+&output=json
+
+{
+    "metricId": 8728531,
+    "metricName": "Hardware Resources|Memory|Total (MB)",
+    "metricPath": "Application Infrastructure Performance|APIGEE_PRD8|Individual Nodes|sd-3bef-74aa_router|Hardware Resources|Memory|Total (MB)",
+    "frequency": "ONE_MIN",
+    "metricValues": [ {
+        "startTimeInMillis": 1778153880000,
+        "occurrences": 0,
+        "current": 63886,
+        "min": 63886,
+        "max": 63886,
+        "useRange": true,
+        "count": 1200,
+        "sum": 7663200,
+        "value": 63886,
+        "standardDeviation": 0
+    } ]
+},
+{
+    "metricId": 9198575,
+    "metricName": "METRIC DATA NOT FOUND",
+    "metricPath": "Application Infrastructure Performance|MCAG|Individual Nodes|sd-8f7b-e29b_MCAgent|Agent|BCI|Average Time to Create ClassMetaData (ms)",
+    "frequency": "ONE_MIN",
+    "metricValues": [ ]
+},
+{
+    "metricId": 8728585,
+    "metricName": "JVM|Garbage Collection|Freed-Objects (MB)",
+    "metricPath": "Application Infrastructure Performance|APIGEE_PRD7|Individual Nodes|sd-b452-5cf7_mp|JVM|Garbage Collection|Freed-Objects (MB)",
+    "frequency": "ONE_MIN",
+    "metricValues": [ {
+        "startTimeInMillis": 1778153880000,
+        "occurrences": 0,
+        "current": 56037,
+        "min": 42683,
+        "max": 59164,
+        "useRange": true,
+        "count": 60,
+        "sum": 3091968,
+        "value": 51533,
+        "standardDeviation": 0
+    } ]
+}
+
+
+
+
 https://appdyn-nam-gcg-prod-1.net:8090/controller/rest/applications/169196 FUSION COMMERCIAL NAM PRD/metric-data
 ?metric-path=Application Infrastructure Performance|MCAG|Individual Nodes|*|JMX|*|*
 &time-range-type=BEFORE_NOW
