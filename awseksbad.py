@@ -1,3 +1,37 @@
+https://appdyn-nam-gcg-prod-1.net:8090/controller/rest/applications/169196 FUSION COMMERCIAL NAM PRD/metric-data
+?metric-path=Application Infrastructure Performance|MCAG|Individual Nodes|*|JMX|*|*
+&time-range-type=BEFORE_NOW
+&duration-in-mins=5
+&output=json
+
+https://appdync-nam-gcg-p8.cloudgsl.net:8090/controller/rest/applications/171532 DIGITALNEXGEN-IES SWDC NAM PRD/metrics
+?metric-path=Application Infrastructure Performance|GEMFIRE|Individual Nodes|*|JMX|*|*
+&time-range-type=BEFORE_NOW
+&duration-in-mins=5
+&output=json
+
+{
+    "metricId" : 5484866,
+    "metricName" : "server|Component:1643|JMX|GemFire_System:Distributed|AverageReads",
+    "metricPath" : "Application Infrastructure Performance|GEMFIRE|Individual Nodes|sd-7be6-ff35|JMX|GemFire_System|Distributed|AverageReads",
+    "frequency" : "ONE_MIN",
+    "metricValues" : [ {
+        "startTimeInMillis" : 1778152440000,
+        "occurrences" : 0,
+        "current" : 1275,
+        "min" : 496,
+        "max" : 1275,
+        "useRange" : true,
+        "count" : 60,
+        "sum" : 44736,
+        "value" : 746,
+        "standardDeviation" : 0
+    } ]
+}
+
+
+
+
 {
   "_comment": "NAM Sales Splunk: hosts, ports, FIDs & connection details",
   "sector": "Sales",
