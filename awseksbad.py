@@ -1,3 +1,62 @@
+
+{
+  "target_key": "",
+  "platform": "genfire",
+  "identifiers": {
+    "cluster": "",
+    "application": "",
+    "environment": "",
+    "datacenter": "",
+    "extras": {}
+  },
+  "source": {
+    "type": "appdynamics",
+    "controller_ref": "",
+    "credential_key": "ampchat",
+    "appd_application_path": "",
+    "metric_path": ""
+  },
+  "tunables": {
+    "poll_interval_minutes": 5,
+    "lookback_minutes": 5,
+    "capture_full_stats": true
+  },
+  "notification_routing": {
+    "recipients_to": [],
+    "recipients_bcc": [],
+    "recipients_cc": [],
+    "enabled": true
+  },
+  "filters": {
+    "instance_include": [],
+    "instance_exclude": [],
+    "metric_include": [
+      "RegisteredCQCount",
+      "JVMPauses",
+      "QueryRequestRate",
+      "ClientConnectionCount",
+      "AverageWrites",
+      "NumSubscriptions",
+      "TotalRegionEntryCount",
+      "PutAllRate",
+      "AverageReads",
+      "ServerLocator",
+      "MaximumHeapSize",
+      "GarbageCollectionCount",
+      "GarbageCollectionTime",
+      "PutsRate",
+      "GetsRate",
+      "NumThreads",
+      "CpuUsage",
+      "CurrentHeapSize",
+      "TotalHeapSize",
+      "UsedMemory"
+    ]
+  },
+  "enabled": true
+}
+
+
 https://appdync-nam-gcg-p2.wlb2.net:8090/controller/rest/applications/Database Monitoring/metric-data
 ?metric-path=Databases|*|*|*
 &time-range-type=BEFORE_NOW
