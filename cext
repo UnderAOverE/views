@@ -1,215 +1,59 @@
-# The following code block contains all necessary files for the C extension.
-# It is divided by filename for clarity.
-
-# ==================================
-# Filename: flatten.c
-# (C extension with GIL)
-# ==================================
-#include <Python.h>
-
-static PyObject* flatten_list(PyObject* self, PyObject* args) {
-    PyObject* original_list;
-    if (!PyArg_ParseTuple(args, "O", &original_list)) {
-        return NULL;
+{
+  "target_key": "digital-mbol-gtdc",
+  "platform": "gemfire",
+  "identifiers": {
+    "application": "Mobile",
+    "environment": "production",
+    "datacenter": "GTDC",
+    "extras": {
+      "cluster": "Digital-MBOL"
     }
-
-    if (!PyList_Check(original_list)) {
-        PyErr_SetString(PyExc_TypeError, "Expected a list.");
-        return NULL;
-    }
-
-    Py_ssize_t size = PyList_Size(original_list);
-    PyObject* flattened_list = PyList_New(size);
-    if (!flattened_list) {
-        return NULL;
-    }
-
-    for (Py_ssize_t i = 0; i < size; ++i) {
-        PyObject* item = PyList_GetItem(original_list, i);
-        if (!PyDict_Check(item)) {
-            Py_DECREF(flattened_list);
-            PyErr_SetString(PyExc_TypeError, "List items must be dictionaries.");
-            return NULL;
-        }
-
-        PyObject* namespace_key = PyUnicode_FromString("namespace");
-        PyObject* namespace_value = PyDict_GetItemWithError(item, namespace_key);
-        Py_DECREF(namespace_key);
-
-        if (!namespace_value) {
-            if (PyErr_Occurred()) {
-                Py_DECREF(flattened_list);
-                return NULL;
-            }
-            Py_DECREF(flattened_list);
-            PyErr_SetString(PyExc_KeyError, "'namespace' key not found.");
-            return NULL;
-        }
-
-        PyObject* new_dict = PyDict_Copy(item);
-        if (!new_dict) {
-            Py_DECREF(flattened_list);
-            return NULL;
-        }
-        PyDict_DelItemString(new_dict, "namespace");
-
-        PyObject* final_dict = PyDict_New();
-        if (!final_dict) {
-            Py_DECREF(new_dict);
-            Py_DECREF(flattened_list);
-            return NULL;
-        }
-        PyDict_SetItem(final_dict, namespace_value, new_dict);
-
-        PyList_SetItem(flattened_list, i, final_dict);
-
-        Py_DECREF(new_dict);
-    }
-
-    return flattened_list;
-}
-
-static PyMethodDef methods[] = {
-    {"flatten", flatten_list, METH_VARARGS, "Flattens a list of dictionaries."},
-    {NULL, NULL, 0, NULL}
-};
-
-static struct PyModuleDef flattenmodule = {
-    PyModuleDef_HEAD_INIT,
-    "flatten",
-    "A module for flattening a list of dictionaries.",
-    -1,
-    methods
-};
-
-PyMODINIT_FUNC PyInit_flatten(void) {
-    return PyModule_Create(&flattenmodule);
-}
-
-// ==================================
-// Filename: flatten_nogil.c
-// (C extension without GIL)
-// ==================================
-#include <Python.h>
-
-static PyObject* flatten_list_nogil(PyObject* self, PyObject* args) {
-    PyObject* original_list;
-    if (!PyArg_ParseTuple(args, "O", &original_list)) {
-        return NULL;
-    }
-
-    if (!PyList_Check(original_list)) {
-        PyErr_SetString(PyExc_TypeError, "Expected a list.");
-        return NULL;
-    }
-
-    Py_ssize_t size = PyList_Size(original_list);
-
-    Py_BEGIN_ALLOW_THREADS
-
-    PyObject* flattened_list = NULL;
-    Py_ssize_t i;
-    
-    Py_BLOCK_THREADS
-    flattened_list = PyList_New(size);
-    if (!flattened_list) {
-        Py_END_ALLOW_THREADS
-        return NULL;
-    }
-    Py_UNBLOCK_THREADS
-
-    for (i = 0; i < size; ++i) {
-        PyObject* item = NULL;
-        PyObject* namespace_key = NULL;
-        PyObject* namespace_value = NULL;
-        PyObject* new_dict = NULL;
-        PyObject* final_dict = NULL;
-
-        Py_BLOCK_THREADS
-        item = PyList_GetItem(original_list, i);
-        if (!PyDict_Check(item)) {
-            Py_DECREF(flattened_list);
-            Py_END_ALLOW_THREADS
-            PyErr_SetString(PyExc_TypeError, "List items must be dictionaries.");
-            return NULL;
-        }
-
-        namespace_key = PyUnicode_FromString("namespace");
-        namespace_value = PyDict_GetItemWithError(item, namespace_key);
-        Py_DECREF(namespace_key);
-
-        if (!namespace_value) {
-            if (PyErr_Occurred()) {
-                Py_DECREF(flattened_list);
-                Py_END_ALLOW_THREADS
-                return NULL;
-            }
-            Py_DECREF(flattened_list);
-            Py_END_ALLOW_THREADS
-            PyErr_SetString(PyExc_KeyError, "'namespace' key not found.");
-            return NULL;
-        }
-
-        new_dict = PyDict_Copy(item);
-        if (!new_dict) {
-            Py_DECREF(flattened_list);
-            Py_END_ALLOW_THREADS
-            return NULL;
-        }
-        PyDict_DelItemString(new_dict, "namespace");
-
-        final_dict = PyDict_New();
-        if (!final_dict) {
-            Py_DECREF(new_dict);
-            Py_DECREF(flattened_list);
-            Py_END_ALLOW_THREADS
-            return NULL;
-        }
-        PyDict_SetItem(final_dict, namespace_value, new_dict);
-
-        PyList_SetItem(flattened_list, i, final_dict);
-        Py_DECREF(new_dict);
-        
-        Py_UNBLOCK_THREADS
-    }
-
-    Py_END_ALLOW_THREADS
-
-    return flattened_list;
-}
-
-static PyMethodDef methods_nogil[] = {
-    {"flatten", flatten_list_nogil, METH_VARARGS, "Flattens a list of dictionaries without holding the GIL."},
-    {NULL, NULL, 0, NULL}
-};
-
-static struct PyModuleDef flatten_nogil_module = {
-    PyModuleDef_HEAD_INIT,
-    "flatten_nogil",
-    "A module for flattening a list of dictionaries, releasing the GIL.",
-    -1,
-    methods_nogil
-};
-
-PyMODINIT_FUNC PyInit_flatten_nogil(void) {
-    return PyModule_Create(&flatten_nogil_module);
-}
-
-// ==================================
-// Filename: setup.py
-#include <Python.h>
-# ==================================
-from setuptools import setup, Extension
-
-flatten_module = Extension('flatten', sources=['flatten.c'])
-flatten_nogil_module = Extension('flatten_nogil', sources=['flatten_nogil.c'])
-
-setup(
-    name='PythonFlattener',
-    version='1.0',
-    description='A C extension for flattening lists of dictionaries.',
-    ext_modules=[
-        flatten_module,
-        flatten_nogil_module
+  },
+  "source": {
+    "type": "appdynamics",
+    "controller_ref": "GCG-NA-PRD15",
+    "credential_key": "ampchat",
+    "appd_application_path": "169688 MBOL GTDC NAM PRD",
+    "metric_path": "Application Infrastructure Performance|169073-MBOL-GT_DIGITAL|Individual Nodes|*|JMX|*|*|*"
+  },
+  "tunables": {
+    "poll_interval_minutes": 5,
+    "lookback_minutes": 5,
+    "capture_full_stats": false
+  },
+  "notification_routing": {
+    "recipients_to": [],
+    "recipients_bcc": [],
+    "recipients_cc": [],
+    "enabled": true
+  },
+  "filters": {
+    "instance_include": [
+      "sd-4msu-31r9",
+      "sd-ipug-rlti",
+      "sd-3ha2-4ilw",
+      "sd-ryc3-4r8m",
+      "sd-t4wr-i8y6",
+      "sd-282r-euse"
+    ],
+    "instance_exclude": [],
+    "metric_include": [
+      "JVMPauses",
+      "ClientConnectionCount",
+      "NumSubscriptions",
+      "PutAllRate",
+      "AverageWrites",
+      "AverageReads",
+      "GarbageCollectionCount",
+      "GarbageCollectionTime",
+      "PutsRate",
+      "GetsRate",
+      "NumThreads",
+      "CpuUsage",
+      "CurrentHeapSize",
+      "UsedMemory",
+      "UsedHeapSize"
     ]
-)
+  },
+  "enabled": true
+}
