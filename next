@@ -1,0 +1,748 @@
+#!/usr/bin/env python
+
+
+#
+#
+# ----------------------------------------------------------------------------------------------------#
+#                                                                                                     #
+# File Name     : sre/business_transactions.py.                                                       #
+# Date of birth : 2026-05-20.                                                                         #
+# Version       : 1.0.0.                                                                              #
+# Author        : Shane Reddy.                                                                        #
+#                                                                                                     #
+# Explanation   : Pydantic model + read repository for the BusinessTransactions catalog collection.   #
+#                 Each document is one onboarded BT - identifies the (databasename, collectionname)   #
+#                 the SREData metrics for that BT land in, plus org metadata (sector / region /       #
+#                 environment / lob / appname) and lifecycle metadata (onboardinguser /               #
+#                 onboardingtool / lastUpdatedBy / lastUpdatedOn). Distinct from sre/repository.py    #
+#                 which queries the LIVE metric collections - this is the catalog/registry of WHICH   #
+#                 BTs the SRE team has chosen to monitor.                                              #
+# Dependencies  : pydantic, core.db.adapters.                                                          #
+# Modifications : 2026-05-20 Shane Reddy - initial scaffold.                                          #
+#                                                                                                     #
+# Contact       : shanevreddy@gmail.com.                                                              #
+#                                                                                                     #
+# ----------------------------------------------------------------------------------------------------#
+#
+#
+
+
+# ----------------------------------------------------------------------------------------------------#
+# Imports.                                                                                            #
+# ----------------------------------------------------------------------------------------------------#
+
+import sys
+
+sys.dont_write_bytecode = True
+
+# External imports
+
+from collections.abc import Mapping
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+# Internal imports
+
+from core.db.adapters import PyMongoAdapter
+
+# Local variables
+
+# (none)
+
+
+# ----------------------------------------------------------------------------------------------------#
+# Model.                                                                                              #
+# ----------------------------------------------------------------------------------------------------#
+
+class BusinessTransactionConfig(BaseModel):
+
+    """
+    One row in the BusinessTransactions catalog. Wire format is mixed
+    PascalCase (`Business`, `Drift_AppName`, `TechnologyManagedSegment_L6`)
+    and lowercase (`databasename`, `lastUpdatedBy`, `onboardinguser`); we
+    keep both via Pydantic aliases without forcing a global rename.
+
+    `extra="allow"` because the upstream producer adds fields opportunistically
+    (the sample doc carries ~30 fields and operators have signalled more on
+    the way). We expose the operationally-useful subset as typed attributes;
+    the rest stays accessible via `model_dump(by_alias=True)` for raw access.
+
+    `lastUpdatedOn` is a non-ISO string ("10/8/2025 16:12 EST"); kept as a
+    string and parsed only on the display layer where best-effort is fine.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    # ---- Catalog target (where the live SREData lives) ---- #
+
+    databasename: str | None = Field(default=None, description="DB hosting the SREData for this BT.")
+    collectionname: str | None = Field(default=None, description="Collection hosting the SREData for this BT.")
+    fetchcollectionname: str | None = Field(
+        default=None,
+        description="Companion fetch collection name (producer-side detail).",
+    )
+
+    # ---- Org metadata ---- #
+
+    sector: str | None = Field(default=None, description="Sector rollup (e.g. PBWM).")
+    region: str | None = Field(default=None, description="Region (e.g. NAM).")
+    environment: str | None = Field(default=None, description="Environment (e.g. PRODUCTION).")
+    lob: str | None = Field(default=None, description="Line of business.")
+    appname: str | None = Field(default=None, description="Owning application name.")
+    csi: str | None = Field(default=None, description="CSI number.")
+    business: str | None = Field(
+        default=None,
+        alias="Business",
+        description="Business unit (USPB, etc.) - aliased from PascalCase wire name.",
+    )
+
+    # ---- Producer / batch config ---- #
+
+    querytool: str | None = Field(default=None, description="Tool the BT is queried via (Splunk, AppD, ELK, …).")
+    batch_name: str | None = Field(
+        default=None,
+        alias="batchName",
+        description="Producer batch identifier.",
+    )
+    interval: int | None = Field(default=None, description="Producer cadence in seconds.")
+    active: bool | None = Field(default=None, description="Whether the BT is currently being scraped.")
+    features: list[Any] = Field(
+        default_factory=list,
+        description=(
+            "Features emitted by this BT. Producer-side schema is permissive - some "
+            "catalogs store this as a list of plain feature-name strings, others as "
+            "a list of dicts (each carrying a name + extra metadata). Typed `list[Any]` "
+            "so both shapes parse; the page normalizes when extracting names for the "
+            "FCA filter / display."
+        ),
+    )
+    datacenters: list[str] = Field(default_factory=list, description="Datacenters in scope for this BT.")
+
+    # ---- Lifecycle metadata (the user-visible 'who/when' columns) ---- #
+
+    onboardinguser: str | None = Field(default=None, description="SOEID of the operator who onboarded the BT.")
+    onboardingtool: str | None = Field(
+        default=None,
+        description="UA / tool string captured at onboard time.",
+    )
+    last_updated_by: str | None = Field(
+        default=None,
+        alias="lastUpdatedBy",
+        description="SOEID of the last operator to edit this catalog row.",
+    )
+    last_updated_on: str | None = Field(
+        default=None,
+        alias="lastUpdatedOn",
+        description="Free-form timestamp string (often 'MM/DD/YYYY HH:MM TZ').",
+    )
+
+    mongo_id: Any | None = Field(default=None, alias="_id", description="Mongo _id (ObjectId or string).")
+
+# endClass
+
+
+# ----------------------------------------------------------------------------------------------------#
+# Repository.                                                                                         #
+# ----------------------------------------------------------------------------------------------------#
+
+class BusinessTransactionsRepository:
+
+    """
+    Sync read access to one sector's BusinessTransactions catalog.
+
+    Not derived from BaseAuditRepository - this is registry-style metadata,
+    not audit telemetry. Kept under `src/sre/` because the catalog is the
+    SRE team's source of truth for which BTs to monitor.
+    """
+
+    def __init__(
+            self,
+            adapter: PyMongoAdapter,
+            database: str,
+            collection: str,
+    ) -> None:
+
+        """
+        Bind to one (database, collection) namespace.
+
+        :param adapter: shared sync PyMongoAdapter from AppRuntime.
+        :type adapter: PyMongoAdapter
+        :param database: Mongo database name (e.g. "PBWM").
+        :type database: str
+        :param collection: Mongo collection name (typically "BusinessTransactions").
+        :type collection: str
+        """
+
+        self._adapter = adapter
+        self._database = database
+        self._collection = collection
+
+    # endDef
+
+    @property
+    def database(self) -> str:
+
+        """Database name this repository targets."""
+
+        return self._database
+
+    # endDef
+
+    @property
+    def collection(self) -> str:
+
+        """Collection name this repository targets."""
+
+        return self._collection
+
+    # endDef
+
+    def list_all(
+            self,
+            *,
+            limit: int = 5000,
+            extra_filter: Mapping[str, Any] | None = None,
+    ) -> list[BusinessTransactionConfig]:
+
+        """
+        Fetch the full catalog (or a filtered subset) as parsed config rows.
+
+        Sorted by `lastUpdatedOn` desc - most-recently-edited rows surface
+        first. The sort uses the string value as-is; given the non-ISO format
+        on the source side that's a best-effort ordering, but it's good
+        enough for "operators are usually looking at what just changed."
+
+        :param limit: hard cap on rows returned; must be positive.
+        :type limit: int
+        :param extra_filter: optional Mongo filter to narrow the catalog.
+        :type extra_filter: Mapping[str, Any] | None
+        :return: parsed config rows.
+        :rtype: list[BusinessTransactionConfig]
+        :raises ValueError: when limit is not positive.
+        """
+
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+
+        # endIf
+
+        query: dict[str, Any] = dict(extra_filter) if extra_filter else {}
+        cursor = self._adapter.find(
+            self._database,
+            self._collection,
+            query=query,
+            sort=[("lastUpdatedOn", -1)],
+            limit=limit,
+        )
+        return [BusinessTransactionConfig.model_validate(doc) for doc in cursor]
+
+    # endDef
+
+    def distinct_field(self, field: str) -> list[str]:
+
+        """
+        Distinct values for a single field across the catalog. Used to
+        populate sidebar dropdowns (sector / environment / querytool / …).
+
+        :param field: dotted field path on the catalog doc.
+        :type field: str
+        :return: sorted, deduplicated, None-dropped, str-cast list of values.
+        :rtype: list[str]
+        """
+
+        values = self._adapter.distinct(self._database, self._collection, field)
+        return sorted({str(v) for v in values if v is not None})
+
+    # endDef
+
+# endClass
+
+
+# end_sre/business_transactions.py
+
+
+
+#!/usr/bin/env python
+
+
+#
+#
+# ----------------------------------------------------------------------------------------------------#
+#                                                                                                     #
+# File Name     : dashboards/pages/04_SRE_Business_Transactions.py.                                   #
+# Date of birth : 2026-05-20.                                                                         #
+# Version       : 1.0.0.                                                                              #
+# Author        : Shane Reddy.                                                                        #
+#                                                                                                     #
+# Explanation   : SRE Business Transactions page - catalog view of every monitored BT, surfacing      #
+#                 who onboarded it, who last edited it, and when. Sidebar filters: catalog source     #
+#                 (db, coll), sector, environment, active flag, querytool. Body shows a sortable      #
+#                 dataframe with the operationally-useful columns; a "Show raw doc" expander reveals  #
+#                 the full BT config for the selected row. Independent of the SRE Metrics page -      #
+#                 metrics is "is the live data flowing", this is "what BTs have we onboarded".        #
+# Dependencies  : streamlit, polars, core.config.sre_business_transactions, core.constants,           #
+#                 dashboards.data, sre.business_transactions.                                          #
+# Modifications : 2026-05-20 Shane Reddy - initial scaffold.                                          #
+#                                                                                                     #
+# Contact       : shanevreddy@gmail.com.                                                              #
+#                                                                                                     #
+# ----------------------------------------------------------------------------------------------------#
+#
+#
+
+
+# ----------------------------------------------------------------------------------------------------#
+# Imports.                                                                                            #
+# ----------------------------------------------------------------------------------------------------#
+
+import sys
+
+sys.dont_write_bytecode = True
+
+# External imports
+
+from datetime import datetime
+from typing import Any
+
+import polars as pl
+import streamlit as st
+
+# Internal imports
+
+from core.config.sre_business_transactions import (
+    SreBtCatalog,
+    load_sre_business_transactions_settings,
+)
+from core.config.sre_metrics import load_sre_metrics_settings
+from core.constants import UTC
+from dashboards.data import get_runtime
+from sre.business_transactions import BusinessTransactionsRepository
+
+# Local variables
+
+#: Hard upper-bound TTL on cached catalog calls. Catalog edits are rare on the
+#: SRE side, so a generous TTL keeps page load fast.
+_CACHE_HARD_TTL_S: int = 1800
+
+#: Floor "now" to this many seconds when building the cache-key bucket so the
+#: catalog refresh fires on stable boundaries instead of every page render.
+_CATALOG_BUCKET_S: int = 300
+
+#: Columns rendered in the BT table, in display order. The page model maps
+#: from the wire-format aliases to these snake_case attribute names.
+_DISPLAY_COLUMNS: list[str] = [
+    "active",
+    "sector",
+    "environment",
+    "appname",
+    "databasename",
+    "collectionname",
+    "querytool",
+    "batch_name",
+    "interval",
+    "csi",
+    "lob",
+    "business",
+    "onboardinguser",
+    "last_updated_by",
+    "last_updated_on",
+]
+
+
+# ----------------------------------------------------------------------------------------------------#
+# Cached query helpers.                                                                               #
+# ----------------------------------------------------------------------------------------------------#
+
+def _now_bucket_iso(now_utc: datetime, ttl_seconds: int) -> str:
+
+    """
+    Floor `now_utc` to a TTL-window-aligned ISO string used as a cache key.
+
+    :param now_utc: reference "now".
+    :type now_utc: datetime
+    :param ttl_seconds: window size.
+    :type ttl_seconds: int
+    :return: ISO-format string of the floored timestamp.
+    :rtype: str
+    """
+
+    floor = datetime.fromtimestamp(
+        int(now_utc.timestamp()) // max(ttl_seconds, 1) * max(ttl_seconds, 1),
+        tz=UTC,
+    )
+    return floor.isoformat()
+
+# endDef
+
+
+@st.cache_data(ttl=_CACHE_HARD_TTL_S, show_spinner="Loading catalog…")
+def _list_catalog_cached(
+        database: str,
+        collection: str,
+        now_bucket: str,
+) -> list[dict[str, Any]]:
+
+    """
+    Cached wrapper around `BusinessTransactionsRepository.list_all`.
+
+    Returns dicts (model_dump) so the result is JSON-serializable and
+    survives Streamlit's cache hashing. Aliased field names are preserved on
+    the dump so the page can choose between the snake_case attribute names
+    (default columns) and the wire-format names (raw-doc viewer).
+
+    :param database: target Mongo database.
+    :type database: str
+    :param collection: target Mongo collection.
+    :type collection: str
+    :param now_bucket: floor-aligned cache key.
+    :type now_bucket: str
+    :return: list of catalog dicts.
+    :rtype: list[dict[str, Any]]
+    """
+
+    adapter = get_runtime().adapter
+    repo = BusinessTransactionsRepository(adapter, database, collection)
+    return [row.model_dump() for row in repo.list_all()]
+
+# endDef
+
+
+@st.cache_data(ttl=_CACHE_HARD_TTL_S, show_spinner=False)
+def _distinct_field_cached(
+        database: str,
+        collection: str,
+        field: str,
+        now_bucket: str,
+) -> list[str]:
+
+    """
+    Cached wrapper around `BusinessTransactionsRepository.distinct_field`.
+
+    :param database: target Mongo database.
+    :type database: str
+    :param collection: target Mongo collection.
+    :type collection: str
+    :param field: dotted field path to enumerate.
+    :type field: str
+    :param now_bucket: floor-aligned cache key.
+    :type now_bucket: str
+    :return: distinct values.
+    :rtype: list[str]
+    """
+
+    adapter = get_runtime().adapter
+    repo = BusinessTransactionsRepository(adapter, database, collection)
+    return repo.distinct_field(field)
+
+# endDef
+
+
+# ----------------------------------------------------------------------------------------------------#
+# Page.                                                                                               #
+# ----------------------------------------------------------------------------------------------------#
+
+st.set_page_config(
+    page_title="SRE Business Transactions - AMP Analytics Platform",
+    layout="wide",
+)
+st.title("SRE Business Transactions")
+st.caption(
+    "Catalog of every onboarded business transaction. Each row tells you which "
+    "(database, collection) the live SREData lives in, who onboarded it, and who "
+    "last edited it. Use this to answer 'is this BT actually being scraped?' and "
+    "'who do I ask about this BT?' before drilling into the SRE Metrics page."
+)
+
+settings = load_sre_business_transactions_settings()
+
+if not settings.catalogs:
+    st.info(
+        "`conf/sre_business_transactions.yaml` declares no catalogs. Add a "
+        "`catalogs:` list with at least one `{name, display_name, database, "
+        "collection}` entry to populate this page."
+    )
+    st.stop()
+
+# endIf
+
+
+# ----------------------------------------------------------------------------------------------------#
+# Refresh + sidebar.                                                                                  #
+# ----------------------------------------------------------------------------------------------------#
+
+ref_col, ts_col = st.columns([1, 6])
+with ref_col:
+    if st.button(
+        "Refresh",
+        key="sre_bt_refresh",
+        help="Re-fetch the catalog from Mongo and rebuild every dropdown.",
+    ):
+        _list_catalog_cached.clear()           # type: ignore[attr-defined]
+        _distinct_field_cached.clear()         # type: ignore[attr-defined]
+        st.rerun()
+
+    # endIf
+
+# endWith
+
+with ts_col:
+    st.caption(f"Loaded at: {datetime.now(UTC).isoformat(timespec='seconds')}")
+
+# endWith
+
+st.sidebar.subheader("Catalog source")
+
+catalog_labels: dict[str, SreBtCatalog] = {
+    f"{c.display_name} ({c.database}.{c.collection})": c for c in settings.catalogs
+}
+picked_label = st.sidebar.selectbox(
+    "Catalog",
+    options=list(catalog_labels.keys()),
+    index=0,
+    key="sre_bt_catalog",
+)
+catalog = catalog_labels[picked_label]
+
+now_utc = datetime.now(UTC)
+now_bucket = _now_bucket_iso(now_utc, _CATALOG_BUCKET_S)
+
+
+# ----------------------------------------------------------------------------------------------------#
+# Sidebar filters.                                                                                    #
+# ----------------------------------------------------------------------------------------------------#
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("Filters")
+
+sectors = _distinct_field_cached(catalog.database, catalog.collection, "sector", now_bucket)
+environments = _distinct_field_cached(catalog.database, catalog.collection, "environment", now_bucket)
+querytools = _distinct_field_cached(catalog.database, catalog.collection, "querytool", now_bucket)
+
+picked_sectors: list[str] = st.sidebar.multiselect(
+    "Sector",
+    options=sectors,
+    default=[],
+    key="sre_bt_sectors",
+    help="Empty = include all sectors.",
+)
+
+picked_envs: list[str] = st.sidebar.multiselect(
+    "Environment",
+    options=environments,
+    default=[],
+    key="sre_bt_envs",
+    help="Empty = include all environments.",
+)
+
+picked_tools: list[str] = st.sidebar.multiselect(
+    "Query tool",
+    options=querytools,
+    default=[],
+    key="sre_bt_tools",
+    help="Empty = include every querytool (Splunk / AppD / ELK / …).",
+)
+
+active_filter: str = st.sidebar.radio(
+    "Active flag",
+    options=["Any", "Active only", "Inactive only"],
+    index=0,
+    key="sre_bt_active",
+)
+
+# FCA filter: a BT counts as FCA when ANY of its `features` is in the
+# `fca_features` list maintained alongside the SRE Metrics page in
+# `conf/sre_metrics.yaml`. Shared list across pages so the operator only
+# curates the FCA set in one place.
+fca_features_yaml: tuple[str, ...] = tuple(load_sre_metrics_settings().fca_features)
+
+if fca_features_yaml:
+    fca_only = st.sidebar.toggle(
+        "FCA only",
+        value=False,
+        key="sre_bt_fca_only",
+        help=(
+            f"When ON, the catalog is filtered to BTs whose `features` overlap "
+            f"the {len(fca_features_yaml)} Franchise Critical Application(s) listed "
+            "under `fca_features` in `conf/sre_metrics.yaml`."
+        ),
+    )
+
+else:
+    st.sidebar.toggle(
+        "FCA only",
+        value=False,
+        disabled=True,
+        key="sre_bt_fca_only_disabled",
+        help="`fca_features` is empty in `conf/sre_metrics.yaml` - nothing to filter to.",
+    )
+    fca_only = False
+
+# endIfElse
+
+
+# ----------------------------------------------------------------------------------------------------#
+# Body.                                                                                               #
+# ----------------------------------------------------------------------------------------------------#
+
+rows = _list_catalog_cached(catalog.database, catalog.collection, now_bucket)
+
+if not rows:
+    st.warning(
+        f"No documents in `{catalog.database}.{catalog.collection}`. Either the "
+        "catalog is empty or the namespace is misconfigured."
+    )
+    st.stop()
+
+# endIf
+
+df = pl.DataFrame(rows)
+
+# Apply client-side filters on the cached catalog so the operator gets snappy
+# response without re-querying Mongo for every sidebar change.
+if picked_sectors:
+    df = df.filter(pl.col("sector").is_in(picked_sectors))
+
+# endIf
+
+if picked_envs:
+    df = df.filter(pl.col("environment").is_in(picked_envs))
+
+# endIf
+
+if picked_tools:
+    df = df.filter(pl.col("querytool").is_in(picked_tools))
+
+# endIf
+
+if active_filter == "Active only":
+    df = df.filter(pl.col("active") == True)        # noqa: E712 - polars Expr semantics
+
+elif active_filter == "Inactive only":
+    df = df.filter(pl.col("active") != True)        # noqa: E712
+
+# endIfElif
+
+if fca_only and fca_features_yaml and "features" in df.columns:
+    # The BT catalog's `features` field is producer-permissive: each item is
+    # either a plain string (programmatic id) or a dict like
+    # `{"id": "...", "name": "...", ...}`. To decide if a BT is FCA, we check
+    # both `id` and `name` keys (whichever convention the catalog uses) against
+    # the curated FCA set. Map+apply runs in Python because polars `list.eval`
+    # over heterogeneous-shape elements is fragile.
+    fca_set: set[str] = set(fca_features_yaml)
+
+    def _matches_fca(items: list[Any] | None) -> bool:
+
+        """True if any feature in `items` matches the FCA set by id or name."""
+
+        if not items:
+            return False
+
+        # endIf
+
+        for item in items:
+            if isinstance(item, str):
+                if item in fca_set:
+                    return True
+
+                # endIf
+
+            elif isinstance(item, dict):
+                if item.get("id") in fca_set or item.get("name") in fca_set:
+                    return True
+
+                # endIf
+
+            # endIfElif
+
+        # endFor
+
+        return False
+
+    # endDef
+
+    df = df.filter(
+        pl.col("features").map_elements(_matches_fca, return_dtype=pl.Boolean),
+    )
+
+# endIf
+
+
+# ---- Summary metric cards --------------------------------------------------
+
+total = df.height
+active_count = int((df["active"] == True).sum()) if "active" in df.columns else 0  # noqa: E712
+inactive_count = total - active_count
+distinct_apps = df["appname"].n_unique() if "appname" in df.columns else 0
+distinct_users = df["onboardinguser"].n_unique() if "onboardinguser" in df.columns else 0
+
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Total BTs", f"{total:,}")
+c2.metric("Active", f"{active_count:,}")
+c3.metric("Inactive", f"{inactive_count:,}")
+c4.metric("Distinct apps", f"{distinct_apps:,}")
+c5.metric("Distinct onboarders", f"{distinct_users:,}")
+
+
+# ---- Catalog table ---------------------------------------------------------
+
+st.markdown("---")
+st.subheader("Catalog")
+st.caption(
+    "Sortable / scrollable table of every catalog row matching the sidebar filters. "
+    "Click a column header to sort. Use the 'Raw doc' expander below to inspect "
+    "the full document for any BT."
+)
+
+# Trim to the documented display columns, in order. Anything missing on a
+# given row renders as null / blank rather than crashing the dataframe build.
+display_cols = [c for c in _DISPLAY_COLUMNS if c in df.columns]
+display_df = df.select(display_cols)
+st.dataframe(display_df, width="stretch", hide_index=True)
+
+
+# ---- Raw doc viewer --------------------------------------------------------
+
+st.markdown("---")
+st.subheader("Raw doc")
+st.caption(
+    "Pick a (database, collection) target above plus an appname below to inspect "
+    "the full BT config - useful when you need to see fields not in the table."
+)
+
+if "appname" in df.columns and df.height:
+    app_options = sorted({str(v) for v in df["appname"].drop_nulls().to_list()})
+    picked_app = st.selectbox(
+        "Appname",
+        options=app_options,
+        index=0 if app_options else None,
+        key="sre_bt_raw_app",
+    )
+
+    if picked_app:
+        match_rows = df.filter(pl.col("appname") == picked_app)
+        for idx, row in enumerate(match_rows.iter_rows(named=True)):
+            with st.expander(
+                f"{row.get('databasename', '?')}.{row.get('collectionname', '?')} ({picked_app})",
+                expanded=(idx == 0 and match_rows.height == 1),
+            ):
+                st.json(row, expanded=False)
+
+            # endWith
+
+        # endFor
+
+    # endIf
+
+else:
+    st.info("No appname column in the catalog - skipping raw-doc viewer.")
+
+# endIfElse
+
+
+# end_dashboards/pages/04_SRE_Business_Transactions.py
+
+
+
+
