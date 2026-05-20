@@ -64,25 +64,59 @@ _CACHE_HARD_TTL_S: int = 1800
 #: catalog refresh fires on stable boundaries instead of every page render.
 _CATALOG_BUCKET_S: int = 300
 
-#: Columns rendered in the BT table, in display order. The page model maps
-#: from the wire-format aliases to these snake_case attribute names.
-_DISPLAY_COLUMNS: list[str] = [
+#: Default columns rendered in the BT table when "Show all other fields" is OFF.
+#: `active` is rendered as a narrow glyph (`✅` / `❌` / `—`) instead of a True/
+#: False column, so it stays visible without consuming horizontal room. `name`
+#: and `displayname` are derived from the `features[]` list-of-dict (joined
+#: with commas across all features the BT covers).
+_DEFAULT_COLUMNS: list[str] = [
     "active",
-    "sector",
-    "environment",
     "appname",
-    "databasename",
-    "collectionname",
-    "querytool",
-    "batch_name",
-    "interval",
-    "csi",
-    "lob",
-    "business",
+    "name",
+    "displayname",
     "onboardinguser",
     "last_updated_by",
     "last_updated_on",
 ]
+
+#: Additional columns shown when "Show all other fields" is ON. Inserted
+#: between the identity block and the lifecycle block in display order.
+_EXTENDED_COLUMNS: list[str] = [
+    "databasename",
+    "collectionname",
+    "batch_name",
+    "sector",
+    "interval",
+    "lob",
+    "business",
+]
+
+#: Common tz-abbrev -> UTC-offset substitutions used by `_parse_last_updated`.
+#: Pre-converting to a numeric offset lets `strptime(%z)` succeed; CPython's
+#: `%Z` directive is unreliable for non-UTC zone abbreviations.
+_TZ_ABBREV_TO_OFFSET: dict[str, str] = {
+    " EST": " -0500",
+    " EDT": " -0400",
+    " CST": " -0600",
+    " CDT": " -0500",
+    " MST": " -0700",
+    " MDT": " -0600",
+    " PST": " -0800",
+    " PDT": " -0700",
+    " UTC": " +0000",
+    " GMT": " +0000",
+}
+
+#: Format patterns `_parse_last_updated` tries in order. Add more here if a new
+#: producer ships its own variant; the helper is best-effort and falls back to
+#: None when none match (table column then renders blank for that row).
+_LAST_UPDATED_FORMATS: tuple[str, ...] = (
+    "%m/%d/%Y %H:%M %z",
+    "%m/%d/%Y %H:%M:%S %z",
+    "%Y-%m-%dT%H:%M:%S%z",
+    "%Y-%m-%dT%H:%M:%S.%f%z",
+    "%Y-%m-%d %H:%M:%S%z",
+)
 
 
 # ----------------------------------------------------------------------------------------------------#
@@ -169,6 +203,170 @@ def _distinct_field_cached(
     adapter = get_runtime().adapter
     repo = BusinessTransactionsRepository(adapter, database, collection)
     return repo.distinct_field(field)
+
+# endDef
+
+
+# ----------------------------------------------------------------------------------------------------#
+# Display helpers.                                                                                    #
+# ----------------------------------------------------------------------------------------------------#
+
+def _active_glyph(value: Any) -> str:
+
+    """
+    Render the `active` flag as a single-char glyph. Saves horizontal space
+    over a `True` / `False` column and reads at a glance.
+
+    :param value: raw `active` value (typically bool, occasionally None).
+    :type value: Any
+    :return: `"✅"` for True, `"❌"` for False, `"—"` for anything else.
+    :rtype: str
+    """
+
+    if value is True:
+        return "✅"
+
+    # endIf
+
+    if value is False:
+        return "❌"
+
+    # endIf
+
+    return "—"
+
+# endDef
+
+
+def _feature_strings(items: Any, key: str) -> str:
+
+    """
+    Pull `key` from every dict in a `features[]` list and join with commas.
+
+    BTs cover one or more features; each `features[]` entry is a dict with at
+    least `name` (programmatic id) and `displayname` (human-readable label).
+    Joining gives a compact column value for a multi-feature BT without
+    truncation. Non-string values are str-cast; missing keys are skipped.
+
+    :param items: row['features'] value.
+    :type items: Any
+    :param key: dict key to extract (e.g. `"name"` or `"displayname"`).
+    :type key: str
+    :return: comma-joined extracted values, or empty string when nothing matches.
+    :rtype: str
+    """
+
+    if not items or not isinstance(items, list):
+        return ""
+
+    # endIf
+
+    values: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            value = item.get(key)
+            if value:
+                values.append(str(value))
+
+            # endIf
+
+        # endIf
+
+    # endFor
+
+    return ", ".join(values)
+
+# endDef
+
+
+def _parse_last_updated(value: Any) -> datetime | None:
+
+    """
+    Parse the catalog's `lastUpdatedOn` string into a tz-aware datetime so
+    Streamlit can sort the column chronologically (lexicographic sort of the
+    raw string puts "1/" before "10/" etc, which confuses operators).
+
+    Best-effort across the common producer formats listed in
+    `_LAST_UPDATED_FORMATS`. Falls back to None when none match - the table
+    cell renders blank for that row rather than misordering it.
+
+    :param value: raw `lastUpdatedOn` value, expected to be a string.
+    :type value: Any
+    :return: parsed datetime, or None when parsing fails.
+    :rtype: datetime | None
+    """
+
+    if not isinstance(value, str):
+        return None
+
+    # endIf
+
+    s = value.strip()
+    if not s:
+        return None
+
+    # endIf
+
+    # `%Z` in strptime is unreliable for tz abbreviations; substitute to a
+    # numeric offset that `%z` handles cleanly.
+    for abbrev, offset in _TZ_ABBREV_TO_OFFSET.items():
+        if s.endswith(abbrev):
+            s = s[: -len(abbrev)] + offset
+            break
+
+        # endIf
+
+    # endFor
+
+    for fmt in _LAST_UPDATED_FORMATS:
+        try:
+            return datetime.strptime(s, fmt)
+
+        except ValueError:
+            continue
+
+        # endTryExcept
+
+    # endFor
+
+    return None
+
+# endDef
+
+
+def _project_for_table(row: dict[str, Any]) -> dict[str, Any]:
+
+    """
+    Build the flat scalar projection of a single catalog row used by the
+    display DataFrame. Combines the raw catalog fields with derived columns
+    (`name` / `displayname` extracted from `features[]`; `active` rendered as
+    a glyph; `last_updated_on` parsed to a sortable datetime).
+
+    All values are scalars - no dicts, no lists - so polars schema inference
+    never has to reconcile heterogeneous nested shapes.
+
+    :param row: raw catalog row (one mongo doc dump).
+    :type row: dict[str, Any]
+    :return: flat dict suitable for `pl.DataFrame` construction.
+    :rtype: dict[str, Any]
+    """
+
+    return {
+        "active": _active_glyph(row.get("active")),
+        "appname": row.get("appname"),
+        "name": _feature_strings(row.get("features"), "name"),
+        "displayname": _feature_strings(row.get("features"), "displayname"),
+        "databasename": row.get("databasename"),
+        "collectionname": row.get("collectionname"),
+        "batch_name": row.get("batch_name"),
+        "sector": row.get("sector"),
+        "interval": row.get("interval"),
+        "lob": row.get("lob"),
+        "business": row.get("business"),
+        "onboardinguser": row.get("onboardinguser"),
+        "last_updated_by": row.get("last_updated_by"),
+        "last_updated_on": _parse_last_updated(row.get("last_updated_on")),
+    }
 
 # endDef
 
@@ -450,8 +648,22 @@ st.markdown("---")
 st.subheader("Catalog")
 st.caption(
     "Sortable / scrollable table of every catalog row matching the sidebar filters. "
-    "Click a column header to sort. Use the 'Raw doc' expander below to inspect "
-    "the full document for any BT."
+    "Click a column header to sort - `last_updated_on` sorts chronologically. "
+    "Toggle 'Show all other fields' to surface technical / business metadata "
+    "(databasename, collectionname, batch_name, sector, interval, lob, business)."
+)
+
+show_all = st.toggle(
+    "Show all other fields",
+    value=False,
+    key="sre_bt_show_all_fields",
+    help=(
+        "OFF (default): identity + lifecycle columns only "
+        "(active / appname / name / displayname / onboardinguser / "
+        "last_updated_by / last_updated_on). "
+        "ON: also surfaces databasename / collectionname / batch_name / sector / "
+        "interval / lob / business between the identity and lifecycle blocks."
+    ),
 )
 
 if not filtered_rows:
@@ -461,12 +673,27 @@ else:
     # Flat projection: ONLY the scalar display columns. Nested / list fields
     # (`features`, `datacenters`, `mongoDetails`, etc.) are deliberately
     # excluded so polars never sees them and never has to infer a struct
-    # schema across rows.
-    display_rows = [
-        {col: r.get(col) for col in _DISPLAY_COLUMNS}
-        for r in filtered_rows
-    ]
-    display_df = pl.DataFrame(display_rows, strict=False)
+    # schema across rows. `last_updated_on` is parsed to a real datetime
+    # inside `_project_for_table` so the column sorts chronologically.
+    display_rows = [_project_for_table(r) for r in filtered_rows]
+
+    if show_all:
+        # Insert the extended columns between the identity block (active /
+        # appname / name / displayname) and the lifecycle block
+        # (onboardinguser / last_updated_by / last_updated_on).
+        identity_end = _DEFAULT_COLUMNS.index("displayname") + 1
+        columns_to_render = (
+            _DEFAULT_COLUMNS[:identity_end]
+            + _EXTENDED_COLUMNS
+            + _DEFAULT_COLUMNS[identity_end:]
+        )
+
+    else:
+        columns_to_render = list(_DEFAULT_COLUMNS)
+
+    # endIfElse
+
+    display_df = pl.DataFrame(display_rows, strict=False).select(columns_to_render)
     st.dataframe(display_df, width="stretch", hide_index=True)
 
 # endIfElse
