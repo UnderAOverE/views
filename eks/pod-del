@@ -1,12 +1,21 @@
-'Orphan':
-Meaning: When you delete the owner object, its dependent objects (children) are not deleted. They become "orphaned" and will continue to exist in the cluster.
-Use Case: When you want to delete a parent resource but preserve its children. For example, deleting a Deployment but keeping its ReplicaSets and Pods running for manual inspection or debugging.
-Behavior: The API server will immediately delete the owner object without waiting for its dependents.
-'Foreground':
-Meaning: This is a "cascading delete" where the owner object is deleted only after all its dependent objects have been finalized and deleted by the garbage collector.
-Use Case: This is generally the safest and most common way to perform a cascading delete. It ensures a clean shutdown order. For example, deleting a Deployment will first delete its ReplicaSets, which will then delete their Pods. The Deployment object itself will only be removed from the API after all Pods and ReplicaSets are gone.
-Behavior: The API server sets a "deletion timestamp" on the owner object and adds a foregroundDeletion finalizer. It then waits for the garbage collector to delete all dependents. Once all dependents are gone, the API server removes the finalizer and finally deletes the owner object. While the owner object is in this state, it will show a DeletionTimestamp but might still be visible in kubectl get.
-'Background':
-Meaning: This is also a "cascading delete," but the API server immediately deletes the owner object. The garbage collector then deletes the dependent objects in the background.
-Use Case: When you want the owner object to disappear quickly from the API, but you still want its children to be cleaned up automatically. This can be faster for the initial API response compared to 'Foreground'.
-Behavior: The API server immediately removes the owner object from the store. It then relies on the garbage collector to discover the now-ownerless dependents and delete them asynchronously. This means the children might persist for a short while after the parent is no longer visible in kubectl get.
+source .venv/bin/activate
+python -c "
+import asyncio
+from core.config.mongo import MongoSettings
+from core.db.client import MongoClientFactory
+
+async def main():
+    s = MongoSettings()
+    c = MongoClientFactory(s).build_async()
+    # Whatever your target's source_config points at - swap if different
+    db = c['appd_prod']
+    doc = await db.controllers.find_one({'controller.name': 'GCG-NA-PRD1'})
+    if doc is None:
+        print('NO MATCHING CONTROLLER - check controller_ref on the target')
+    else:
+        url = doc['controller'].get('url') or doc['controller'].get('base_url')
+        print(f'Controller URL: {url}')
+        creds = list(doc['controller'].get('oauth2', {}).get('credentials', {}).keys())
+        print(f'Available credential_keys: {creds}')
+
+asyncio.run(main())
