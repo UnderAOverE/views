@@ -7,3 +7,22 @@ print('mongo.yaml exists there:', (CONF_DIR / 'infra' / 'mongo.yaml').exists())
 print('env override:', os.environ.get('PLATFORM_KPI_MONGO__URI', '<not set>'))
 print('uri loaded:', MongoSettings().uri)
 "
+
+
+
+
+python -c "
+import asyncio
+from core.config.mongo import MongoSettings
+from sources.appd.config import AppDSettings
+from core.db.client import MongoClientFactory
+
+async def main():
+    ms = MongoSettings(); apd = AppDSettings()
+    c = MongoClientFactory(ms).build_async()
+    db = c[apd.controllers_database]
+    coll = db[apd.controllers_collection]
+    refs = await coll.distinct('controller.name')
+    print(f'{apd.controllers_database}.{apd.controllers_collection} controller_refs:', refs)
+    c.close()
+asyncio.run(main())
