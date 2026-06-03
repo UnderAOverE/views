@@ -1,21 +1,9 @@
-source .venv/bin/activate
 python -c "
-import asyncio
 from core.config.mongo import MongoSettings
-from core.db.client import MongoClientFactory
-
-async def main():
-    s = MongoSettings()
-    c = MongoClientFactory(s).build_async()
-    # Whatever your target's source_config points at - swap if different
-    db = c['appd_prod']
-    doc = await db.controllers.find_one({'controller.name': 'GCG-NA-PRD1'})
-    if doc is None:
-        print('NO MATCHING CONTROLLER - check controller_ref on the target')
-    else:
-        url = doc['controller'].get('url') or doc['controller'].get('base_url')
-        print(f'Controller URL: {url}')
-        creds = list(doc['controller'].get('oauth2', {}).get('credentials', {}).keys())
-        print(f'Available credential_keys: {creds}')
-
-asyncio.run(main())
+from core.config import CONF_DIR
+import os
+print('CONF_DIR resolves to:', CONF_DIR)
+print('mongo.yaml exists there:', (CONF_DIR / 'infra' / 'mongo.yaml').exists())
+print('env override:', os.environ.get('PLATFORM_KPI_MONGO__URI', '<not set>'))
+print('uri loaded:', MongoSettings().uri)
+"
