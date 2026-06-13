@@ -49,3 +49,28 @@ Run it and paste step 4's output and step 7's path — those two lines tell us i
 
 /opt/appdata/app/platform_kpi/.venv/bin/python -c "from datetime import datetime, timezone; from pydantic import SecretStr; import sources.appd.controllers as m; p=datetime(2026,1,1,tzinfo=timezone.utc); print('offset', (m.AppDCredential(bearer_token=SecretStr('x'), bearer_token_expiration=p).bearer_token_expiration - p).total_seconds()/3600); print('from', m.__file__)"
 
+
+
+# --- setup ---
+VENV=/opt/appdata/app/platform_kpi/.venv/bin/python
+FILE=/opt/appdata/app/platform_kpi/src/sources/appd/controllers.py
+
+# 1. clear stale bytecode
+find /opt/appdata/app/platform_kpi -type d -name __pycache__ -prune -exec rm -rf {} +
+
+# 2. exact file + validator source Python actually loads
+$VENV -c "import inspect, sources.appd.controllers as m; print('FILE:', m.__file__); print('----'); print(inspect.getsource(m.AppDCredential._normalize_to_utc))"
+
+# 3. behavioral offset test (expect 5.0 if fixed, 0.0 if not)
+$VENV -c "from datetime import datetime, timezone; from pydantic import SecretStr; import sources.appd.controllers as m; p=datetime(2026,1,1,tzinfo=timezone.utc); print('offset', (m.AppDCredential(bearer_token=SecretStr('x'), bearer_token_expiration=p).bearer_token_expiration-p).total_seconds()/3600)"
+
+# 4. what the on-disk file actually contains (the validator block)
+grep -n "tzinfo" "$FILE"
+
+# 5. every copy of this module on disk + any leftover .pyc
+find /opt/appdata/app/platform_kpi -name "controllers.py" -path "*appd*"
+find /opt/appdata/app/platform_kpi -name "controllers*.pyc" -path "*appd*"
+
+# 6. where Python resolves the package from (sys.path order)
+$VENV -c "import sources; print(sources.__file__)"
+
