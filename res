@@ -82,3 +82,14 @@ grep -n "_REFRESHER_TZ" "$FILE"
 
 # what it actually resolves to at runtime + its real offset on Jan 1:
 $VENV -c "from datetime import datetime; import sources.appd.controllers as m; print('TZ =', m._REFRESHER_TZ); print('Jan1 offset =', datetime(2026,1,1).replace(tzinfo=m._REFRESHER_TZ).utcoffset())"
+
+
+
+
+/opt/appdata/amp/platform_kpi/.venv/bin/python -c "from datetime import datetime, timezone; from pydantic import SecretStr; import sources.appd.controllers as m; p=datetime(2026,1,1,tzinfo=timezone.utc); print('offset', (m.AppDCredential(bearer_token=SecretStr('x'), bearer_token_expiration=p).bearer_token_expiration-p).total_seconds()/3600)"
+#   -> offset 5.0
+
+bin/stop.sh && bin/start.sh
+grep appd.tz_normalization.status var/logs/daemon/daemon.log | tail -1
+#   -> active: true
+
