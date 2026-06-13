@@ -74,3 +74,11 @@ find /opt/appdata/app/platform_kpi -name "controllers*.pyc" -path "*appd*"
 # 6. where Python resolves the package from (sys.path order)
 $VENV -c "import sources; print(sources.__file__)"
 
+VENV=/opt/appdata/amp/platform_kpi/.venv/bin/python
+FILE=/opt/appdata/amp/platform_kpi/src/sources/appd/controllers.py
+
+# what the constant says in the file:
+grep -n "_REFRESHER_TZ" "$FILE"
+
+# what it actually resolves to at runtime + its real offset on Jan 1:
+$VENV -c "from datetime import datetime; import sources.appd.controllers as m; print('TZ =', m._REFRESHER_TZ); print('Jan1 offset =', datetime(2026,1,1).replace(tzinfo=m._REFRESHER_TZ).utcoffset())"
