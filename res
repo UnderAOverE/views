@@ -47,4 +47,5 @@ pip pull/git pull first if your prod src isn't already at commit 4aeaa83 — the
 If pip install -e . errors on package discovery, that's the pyproject.toml packages=[...] issue — tell me and I'll switch it to [tool.setuptools.packages.find] where=["src"].
 Run it and paste step 4's output and step 7's path — those two lines tell us if the wipe finally cleared the stale copy.
 
+/opt/appdata/app/platform_kpi/.venv/bin/python -c "from datetime import datetime, timezone; from pydantic import SecretStr; import sources.appd.controllers as m; p=datetime(2026,1,1,tzinfo=timezone.utc); print('offset', (m.AppDCredential(bearer_token=SecretStr('x'), bearer_token_expiration=p).bearer_token_expiration - p).total_seconds()/3600); print('from', m.__file__)"
 
