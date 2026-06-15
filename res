@@ -51,45 +51,87 @@ Run it and paste step 4's output and step 7's path — those two lines tell us i
 
 
 
-# --- setup ---
-VENV=/opt/appdata/app/platform_kpi/.venv/bin/python
-FILE=/opt/appdata/app/platform_kpi/src/sources/appd/controllers.py
+Core concepts
+Bucket — one hour-of-the-week slot. The week is sliced into 168 (7 days × 24 hours); "Tuesday 2pm" is its own bucket. Each gets its own "normal."
+Sample — one collected data point (one metric reading at one timestamp). ~1 per minute from AppD.
+Band — the "normal range" [lower, upper] fitted for one bucket. One band per (target × instance × metric × bucket).
+Fit — the daily job that reads samples and computes the bands.
+Training window — how far back the fit looks (90 days). The pool of history each band is built from.
+Why a bucket gets skipped (no band)
+Low-sample skip — bucket had fewer than 30 samples (min_samples_per_bucket) → not enough data to trust → skipped.
+Flat skip — every sample in the bucket was the same value (max == min) → can't draw a meaningful range → skipped. Usually a stuck/constant metric.
+min_samples_per_bucket — the floor (30). Below it, no band.
+Per-platform fit-health columns
+status — freshness of the platform's last fit run: 🟢 fresh (<24h) / 🟡 stale (24-36h) / 🔴 overdue (>36h or never).
+platform — gemfire / apigee.
+collection — the Mongo collection holding the bands (gemfire_thresholds).
+total bands — count of all band documents.
+stale bands — count of individual bands not refreshed in >36h (they fit once, then stopped qualifying). Different from the status column.
+low-sample skips — how many buckets were dropped for <30 samples this run.
+flat skips — how many buckets were dropped for being flat this run.
+last fit — when the most recent fit ran.
+age — how long ago that was.
+fit_run_id — the UUID of that fit run; use it to grep the daemon log.
+Flat-series table columns
+target_key — which monitored target (e.g. apigee-cassandra-planet7-swdc-clientrequest).
+instance — which node/server (e.g. sd-bcdb-5e9c_cassandra).
+metric_name — which metric (ClientRequest (Read)|Latency|95thPercentile).
+bucket — the flat hour-of-week slot (6_19 = Saturday 19:00 UTC).
+Statuses (quick)
+🟢 fresh — fit ran within cadence (24h). Good.
+🟡 stale — fit is 24-36h old. Watch.
+🔴 overdue — fit >36h old or never. Investigate.
+Band strategy (bonus — you'll see this elsewhere)
+median_mad — band = typical value ± wobble. For steady metrics (heap, CPU).
+percentile — band = middle 98% of values (p1-p99). For bursty metrics (rates, latency).
+Want me to add the alerting/consumer terms too (lower_bound, upper_bound, fitted_at, sample_count, "no opinion"), or is the fit side enough?
 
-# 1. clear stale bytecode
-find /opt/appdata/app/platform_kpi -type d -name __pycache__ -prune -exec rm -rf {} +
+yes add those too
+Band fields (what's stored in each band document)
+lower_bound — the bottom edge of normal. sample.value < lower_bound ⇒ anomalous low.
+upper_bound — the top edge of normal. sample.value > upper_bound ⇒ anomalous high.
+sample_count — how many samples were used to fit this band. The confidence/weight — higher = more trustworthy. Below ~30 it wouldn't exist.
+fitted_at — when this band was computed (UTC). Used to tell if a band is stale.
+window_days — how much history it was fit over (90). Informational, for alert messages.
+strategy — which recipe produced it: median_mad or percentile.
+parameters — the raw math inputs (see below). Optional; used for nice alert wording.
+fit_run_id — the run that produced it; ties all bands from one fit together.
+How the detector (other team) uses them
+anomalous low — incoming value fell below lower_bound. For rates/latency, often "service quietly died."
+anomalous high — incoming value rose above upper_bound. Leak, spike, runaway.
+"no opinion" — no band for this bucket (or band too thin/stale) → detector stays silent, never alerts. The safe default during cold-start/gaps.
+staleness window — the consumer's own "ignore bands older than X" cutoff (~14 days suggested). A band past it = no opinion.
+min-confidence floor — the consumer's "ignore bands with sample_count below N" cutoff. Thin bands = no opinion.
+Inside the math (parameters)
+median — the typical (middle) value of the bucket. Center of a median_mad band.
+MAD — Median Absolute Deviation = the typical wobble around the median (robust to outliers).
+k / k_lower / k_upper — how many MADs out the band edges sit. lower = median - k_lower×MAD, upper = median + k_upper×MAD. Bigger k = wider/looser.
+p_lower / p_upper — the percentile edges for a percentile band (e.g. p1 and p99 = middle 98%).
+winsorize — before fitting, clip the most extreme 1% of samples so recurring spikes don't widen the band. Invisible in the output.
+One-line mental model
+Each bucket gets a band [lower, upper], fit from samples over the training window using a strategy. A live sample outside the band = anomaly; no band / thin / stale = no opinion (silence).
 
-# 2. exact file + validator source Python actually loads
-$VENV -c "import inspect, sources.appd.controllers as m; print('FILE:', m.__file__); print('----'); print(inspect.getsource(m.AppDCredential._normalize_to_utc))"
+That covers the full lifecycle — fit side (buckets, samples, skips), the band schema, and how the consumer turns a band into an alert-or-silence decision.
 
-# 3. behavioral offset test (expect 5.0 if fixed, 0.0 if not)
-$VENV -c "from datetime import datetime, timezone; from pydantic import SecretStr; import sources.appd.controllers as m; p=datetime(2026,1,1,tzinfo=timezone.utc); print('offset', (m.AppDCredential(bearer_token=SecretStr('x'), bearer_token_expiration=p).bearer_token_expiration-p).total_seconds()/3600)"
+and also thre shoul dbe ideally 60 samples in a bukcet correct?
+Almost — 60 is right for one occurrence of the bucket, but the bucket total over the full window is much higher. Let me untangle it.
 
-# 4. what the on-disk file actually contains (the validator block)
-grep -n "tzinfo" "$FILE"
+Per single occurrence of that hour (one week's worth):
 
-# 5. every copy of this module on disk + any leftover .pyc
-find /opt/appdata/app/platform_kpi -name "controllers.py" -path "*appd*"
-find /opt/appdata/app/platform_kpi -name "controllers*.pyc" -path "*appd*"
+1 sample/minute × 60 minutes = ~60 samples. ✅ That's your 60.
+Per bucket over the whole 90-day training window:
 
-# 6. where Python resolves the package from (sys.path order)
-$VENV -c "import sources; print(sources.__file__)"
+A bucket (e.g. "Tuesday 2pm") happens once a week, and the window holds ~13 weeks (90 ÷ 7).
+So a mature bucket pools ~60 × 13 ≈ 780 samples, not 60.
 
-VENV=/opt/appdata/amp/platform_kpi/.venv/bin/python
-FILE=/opt/appdata/amp/platform_kpi/src/sources/appd/controllers.py
+1 occurrence  (1 hour)        ~60   samples
+1 week                        ~60   (one Tuesday-2pm)
+full 90-day window (~13 wks)  ~780  (~13 Tuesday-2pms)
+So the numbers to keep straight:
 
-# what the constant says in the file:
-grep -n "_REFRESHER_TZ" "$FILE"
+~60 = a single hour, polled every minute.
+~780 = a fully warmed-up bucket at 90 days.
+30 = the floor; even one ~60-sample occurrence clears it.
+Why this matters: if you see a bucket stuck around ~60 after several weeks, that series is only reporting ~1 hour per week (sparse) — a candidate for low-sample skips and stale bands. And that sample_count: 47 you saw earlier is just shy of one full hour — about 47 of the 60 minutes collected (partial first occurrence, or a few missing minutes), exactly what you'd expect a few days into warmup.
 
-# what it actually resolves to at runtime + its real offset on Jan 1:
-$VENV -c "from datetime import datetime; import sources.appd.controllers as m; print('TZ =', m._REFRESHER_TZ); print('Jan1 offset =', datetime(2026,1,1).replace(tzinfo=m._REFRESHER_TZ).utcoffset())"
-
-
-
-
-/opt/appdata/amp/platform_kpi/.venv/bin/python -c "from datetime import datetime, timezone; from pydantic import SecretStr; import sources.appd.controllers as m; p=datetime(2026,1,1,tzinfo=timezone.utc); print('offset', (m.AppDCredential(bearer_token=SecretStr('x'), bearer_token_expiration=p).bearer_token_expiration-p).total_seconds()/3600)"
-#   -> offset 5.0
-
-bin/stop.sh && bin/start.sh
-grep appd.tz_normalization.status var/logs/daemon/daemon.log | tail -1
-#   -> active: true
-
+So: 60 per hour-occurrence, yes — but a healthy mature bucket should climb to several hundred as the weeks stack up.
