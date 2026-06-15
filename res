@@ -135,3 +135,12 @@ So the numbers to keep straight:
 Why this matters: if you see a bucket stuck around ~60 after several weeks, that series is only reporting ~1 hour per week (sparse) — a candidate for low-sample skips and stale bands. And that sample_count: 47 you saw earlier is just shy of one full hour — about 47 of the 60 minutes collected (partial first occurrence, or a few missing minutes), exactly what you'd expect a few days into warmup.
 
 So: 60 per hour-occurrence, yes — but a healthy mature bucket should climb to several hundred as the weeks stack up.
+
+
+
+
+/opt/appdata/amp/platform_kpi/.venv/bin/python -c "from dashboards.data.collections import per_platform_collection_stats as f; [print(r['collection'], '->', r['latest_ts']) for r in f() if 'threshold' in r['suffix'] or r['suffix']=='fit_runs']"
+
+
+/opt/appdata/amp/platform_kpi/.venv/bin/python -c "import inspect, dashboards.data.collections as c; s=inspect.getsource(c); print('FILE:', c.__file__); print('FIX PRESENT:', '_LATEST_TS_FIELD' in s and 'fitted_at' in s)"
+
