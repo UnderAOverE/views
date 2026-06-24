@@ -1,9 +1,5 @@
-What it is: Built "platform-kpi," a monitoring-baseline service that automatically pulls performance metrics (CPU, memory, heap, latency, throughput, queue depth) from AppDynamics across our GemFire and Apigee estates, learns what "normal" looks like for each server and each hour of the week, and publishes those learned ranges as a stable, documented data contract that a separate anomaly-detection/alerting team consumes.
-
-Core engine delivered: Designed and shipped the threshold-fitting engine that computes per-(server, metric, hour-of-week) baselines using robust statistics - median/MAD for steady metrics, percentiles for bursty ones - with operator-tunable sensitivity, winsorization so one-off spikes don't pollute the baseline, and per-metric-type handling (e.g. counters, gauges, and flat/state metrics each treated correctly). Backed by ~670 automated tests.
-
-Operability and visibility: Stood up the full surrounding system - a scheduled daemon that collects and fits on a cadence, a FastAPI admin API, and a 9-page "Mission Control" dashboard giving operators live insight into collection coverage, fit health, and per-instance metrics - plus production run scripts with CyberArk-backed credential handling.
-
-Recent hardening: Authored the consumer-facing schema contract so the downstream alerting team can build against a stable interface; added collection-coverage reporting to surface gaps in upstream AppD data; and fixed subtle correctness issues such as preventing degenerate "zero-width" bands on near-constant metrics that would otherwise drive false alerts.
-
-What's next: Extend the same collect-and-fit framework to new platforms (IBM MQ and databases) through the existing pluggable platform interface; add longer-horizon backfill tooling to cut new-target onboarding from weeks to near-immediate; and train per-datacenter-state baselines to catch stress-on-stress conditions - the goal being one consistent monitoring baseline across all our middleware estates.
+db.gemfire_metrics.aggregate([
+  { $group: { _id: { i: "$metadata.instance", m: "$metadata.metric_name", t: "$ts" }, n: { $sum: 1 } } },
+  { $match: { n: { $gt: 1 } } },
+  { $limit: 5 }
+])
