@@ -1,0 +1,65 @@
+ADD — new files (copy src/platforms/apigee/, rename apigee→oracle):
+
+src/platforms/oracle/__init__.py
+src/platforms/oracle/target.py (OracleTarget, pin platform: Literal[Platform.ORACLE])
+src/platforms/oracle/target_loader.py
+src/platforms/oracle/catalog_loader.py
+src/platforms/oracle/fetcher.py (copy ApigeeFetcher)
+UPDATE — required:
+
+src/core/models/enums.py — add ORACLE = "oracle" to Platform
+src/cli/collect.py:153 — add Platform.ORACLE: PlatformBuilder(...) to platforms_registry + the imports at top
+src/platforms/base.py:146 — add Platform.ORACLE to PLATFORM_UI_HINTS
+src/dashboards/data/targets.py:74 — add to _TARGET_LOADERS
+src/dashboards/data/targets.py:189 — add to _PLATFORM_RENDERERS (also add a _render_oracle_row function, copy _render_apigee_row)
+src/dashboards/data/thresholds_health.py:68 — add to _CATALOG_LOADERS (this is what makes the strategy-resolution table show Oracle)
+UPDATE — optional (apigee isn't in these either, so skip unless you want the coverage):
+
+src/api/services/targets_service.py:47 — _TARGET_LOADERS (admin API lists Oracle targets)
+src/dashboards/data/appd.py:64 — _TARGET_LOADERS (AppD-controllers dashboard view)
+CONF — you have these ready:
+
+conf/platforms/oracle/catalog.yaml
+conf/platforms/oracle/targets/*.yaml
+Then: bin/setup.sh (materializes oracle_metrics / oracle_incidents / oracle_thresholds / oracle_thresholds_historical / oracle_fit_runs), and verify with platform-kpi collect --platforms oracle.
+
+That's 5 files to add, 6 to update (2 more optional).
+
+ok questions: what happens if I add mongo and does not add conf files? and do I have o make the mongo migration to true and then run the setup.sh?
+Let me check the two behaviors in the actual code — the catalog/target loaders' handling of missing conf, and what setup.sh keys off.
+
+Read c:\Users\shane\OneDrive\Documents\GitHub\pursuit_of_hapiness\src\platforms\apigee\target_loader.py
+Target loader confirms: missing/empty targets/ dir → logs dir_missing and returns [] (no crash) — same graceful pattern as the catalog. Now let me check setup.sh and the mongo config for what you mean by "migration to true."
+
+Read c:\Users\shane\OneDrive\Documents\GitHub\pursuit_of_hapiness\bin\setup.sh
+setup.sh just runs a no-op collect so the ensure_collection migrations fire. Let me find whether a flag gates those migrations — that's likely your "migration to true."
+
+Grep "migration|ensure_collection|run_migration|auto_create|create_collection|apply_migration|migrate"
+41 lines of output
+Both answered from the code:
+
+Q1 — Add the platform but no conf files? Nothing breaks; it just sits idle.
+Both loaders degrade gracefully (warn + empty, no crash):
+
+No catalog.yaml → load_catalog() returns {} and logs mongo.catalog_loader.file_missing (catalog_loader.py:55-57). Any metrics collected fall back to metric_type=gauge, no unit, and the fit uses the default strategy (median_mad, k=3.5).
+No/empty targets/ dir → load_targets() returns [] and logs mongo.target_loader.dir_missing (target_loader.py:59-61). Collect finds zero targets → collects nothing for that platform.
+So the platform is registered and harmless — dashboards show it with 0 targets and no catalog entries, collect --platforms mongo runs clean and does nothing. (This assumes you added the code folder + registrations; if you add only the enum member without the src/platforms/mongo/ folder, the registry imports fail — but that's not "no conf files," that's missing code.)
+
+Q2 — Yes: migrations_enabled: true, then setup.sh.
+The collection/index creation is gated by a flag — conf/infra/mongo.yaml:124:
+
+
+migrations_enabled: true
+setup.sh runs a no-op collect whose only job is to trigger ensure_collection() — but that's wrapped in if migrations_enabled: (compute_thresholds.py:118, and the same in the collect bootstrap). So:
+
+If it's false, setup.sh runs but skips collection + index creation → your new mongo_metrics / mongo_thresholds / etc. never get materialized (and you can't rely on first-write auto-create, because these are time-series collections + TTL + indexes that a plain insert won't set up correctly).
+The comment there explains the usual pattern: steady-state often flips it off so the daemon (running under a readWrite-only account without dbAdmin) doesn't try to re-apply migrations.
+So the sequence for a new platform is:
+
+Set migrations_enabled: true.
+Run bin/setup.sh under a Mongo account that has dbAdmin (to create the collections + indexes).
+Optionally flip it back to false for steady-state.
+Check your current value first — if your box is already in steady-state with it false, setup.sh will silently no-op on the new collections until you flip it true.
+
+One naming heads-up: calling the monitored platform mongo means its collections are mongo_metrics, mongo_thresholds, … living in your MongoDB — not wrong, just easy to confuse with the storage layer in logs/queries. oracledb-style disambiguation (or mongodb) might read cleaner, but functionally mongo is fine.
+
