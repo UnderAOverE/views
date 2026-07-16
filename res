@@ -61,3 +61,37 @@ E. Adapts to real patterns - daily and weekly rhythms are expected, so only genu
 F. One framework across all AMP layers - a single operating model to run, extend, and reason about
 G. Repeatable, low-cost onboarding - each new platform reuses the same pipeline and tooling
 H. A foundation for proactive health - the base for trend-based early warning as coverage grows
+
+
+
+
+
+Col 1 - How It Works
+
+Collect -> learn -> detect on the AppD feed
+Critical KPIs at 1-minute intervals
+Normal learned per metric, per hour of week (168 baselines)
+Robust bands for steady metrics, percentile bands for bursty
+Hard lines where learning is wrong (disk-fill)
+Every reading judged in context, not one fixed line
+Low-noise, trustworthy alerting
+Col 2 - What It Covers
+
+4 platform types in production
+GemFire - 9 clusters
+Apigee - 3 planets
+Oracle - 10 databases
+Mongo - 15 databases
+MQ - onboarding next
+37 instances live today
+Col 3 - Key Benefits
+
+Catch the cause, not the symptom
+No blind spot under AMP - full-stack coverage
+Faster time-to-detect, lower business impact
+Fewer false alarms than fixed thresholds
+Adapts to daily and weekly patterns
+One framework across all AMP layers
+Repeatable, low-cost onboarding
+"Key Benefits" fits the exec framing well - it's outcome language, not delivery language. Want the columns balanced to equal row counts, or leave them as-is?
+
