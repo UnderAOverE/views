@@ -1,0 +1,47 @@
+e asked the vendor for ameeting to undetrstand few things they replied back saying what are the questions I have ?
+Great — a vendor meeting is the right place to close these out. Let me pull the actual open questions from your spec docs so the list is grounded in this project (not generic), then organize them for the meeting.
+
+Read c:\Users\shane\OneDrive\Documents\GitHub\EWS\docs\zoms-api-reference.md
+Now the architecture doc's open-questions list:
+
+Grep "open question|Open question|question|EWS|confirm|unconfirmed|TBD|clarif" (in c:\Users\shane\OneDrive\Documents\GitHub\EWS\docs\architecture.md)
+28 lines of output
+The architecture doc has a prioritized list at line 245 — let me read it:
+
+Read c:\Users\shane\OneDrive\Documents\GitHub\EWS\docs\architecture.md (lines 246-305)
+Perfect timing — your spec docs already track the open items (docs/zoms-api-reference.md §5 and docs/architecture.md §12), and building the facade surfaced a few more. Here's the consolidated, prioritized list you can send them, grouped so the meeting can move top-down.
+
+Tier 1 — Blockers (nothing connects until these are answered)
+Authentication & endpoints
+
+Token endpoint URLs for ZOMS, CAT and PROD — are they the same auth server as Paze (https://auth.wallet.{cat.}earlywarning.io/token), or ZOMS-specific? (Our current values are copied from Paze docs — a guess.)
+aud (audience) claim value our client_assertion JWT must carry.
+Scope — is maintenance-event the correct scope string?
+mTLS — is mutual TLS required on the token endpoint and/or the API endpoints (answer separately)? If so, which CA chain do we trust, and do we present a client certificate — how is that keypair provisioned to us?
+Onboarding confirmation — confirm our client_id, and the kid of the public key you have on file for us (we understand our public key is already registered as a JWKS — please confirm it's active for ZOMS).
+Confirm the CAT + PROD API base URLs (https://api.zelle.cat.earlywarning.io/zoms, https://api.zelle.earlywarning.com/zoms).
+JWT clock-skew tolerance on iat/nbf/exp, and token TTL / refresh behavior (we see expires_in: 1800 — is it just re-request, no refresh token?).
+Tier 2 — Payment-safety critical (controls live MQ holds)
+Idempotency & retry semantics
+8. Does idempotency-id apply to start/complete/cancel, or only schedule?
+9. Are start/complete/cancel safe to retry (idempotent) if we send a request but never receive your response? (This decides whether we can auto-retry or must stop and reconcile — the single biggest design question for us.)
+10. Must request-id be unique per attempt (new value on retry) while idempotency-id stays constant?
+11. Schedule replay with the same idempotency-id but a different body — rejected, or ignored?
+12. Replay after a client crash/timeout — do you echo the original 201 (and the same maintenanceEventId), or return a duplicate error?
+
+Operational safety
+13. Manual escalation path to release held MQ messages if /complete is unreachable during an active window — what is it? (Critical: if the window is IN_PROGRESS with EWS_HOLD and we can't reach you, how do we get payments flowing again?)
+
+Tier 3 — Contract completeness
+Schedule 201 response body — full schema; is maintenanceEventId returned synchronously, and under what key? (Determines whether our "pending upstream id" fallback ever triggers.)
+Error response body shape + error-code catalog — only success codes were in the docs. Specifically, how do you respond to: double-start, complete-without-start, cancel-after-start, idempotency-replay — and which are retryable vs. terminal vs. already-converged?
+Read/status endpoint — is there a GET /v1/events/{id} or a list/status API to query event state, or any state-change webhook? (Right now our only knowledge of your state is the response to the four POSTs.)
+Rate limits / concurrency limits and the Retry-After behavior on 429.
+Scheduling constraints — minimum lead time, maximum window length, and overlap policy (can two windows overlap?).
+Tier 4 — Field & behavior clarifications
+ewsHold — the exact operational difference between EWS_HOLD and SELF_HOLD; specifically, under SELF_HOLD, what does EWS do with messages during the window?
+suppressDuplicatePayments — exact effect on "On New Payment" notifications.
+networkNotificationId — what is a "Network notification record," and when should we link one?
+How I'd run the meeting: get Tier 1 fully answered (you literally cannot test in CAT without it), then push hardest on #9 and #13 in Tier 2 — those two shape how safely the whole facade behaves around real money. Everything in Tier 3–4 you can also chase over email if the meeting runs short.
+
+Want me to save this as docs/ews-vendor-meeting-questions.md (so you can record their answers next to each question after the meeting, and it feeds back into zoms-api-reference.md)? I can also trim it to a short 6–8 question version if you'd rather keep the meeting tight.
