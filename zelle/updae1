@@ -1,0 +1,14 @@
+. Data layer on your base-repository standard (baf0235)
+
+Local common/ mirror (dropped when merged into the host): logger, db/utils (PyObjectId), db/exceptions (MongoError/DuplicateKeyError), db/motor_repository (the three base classes with _execute_* helpers + abstract CRUD, exactly matching your pics), miscellaneous/utils (sanitizers), and constants (DatabasesCollections + HTTPCodes).
+Records: PyObjectId _id (auto ObjectId), ConfigDict(extra="forbid", populate_by_name=True), None-defaulted nullables (for the base's exclude_none round-trip), the selective field_validator("*") sanitizer (reason only — skips email/ids/payload), and naive→UTC datetime coercion. New LeaseRecord.
+Repos inherit the base classes, take (db_client, base_model), pull names from DatabasesCollections constants (per your SAAS pattern), implement the abstract methods, and keep their specialized methods (transition, try_insert, acquire, append-only audit). get_X_repository(db_client) getters wired into ZelleService.get_service; mongo_database_name/prefix dropped.
+2. Logging (7de1f4a, a08cb81) — across services, repositories, and routes only, as you scoped: swapped every LOGGER for the shared from src.common.logger import logger, added debug/info/warning/error liberally (for you to trim), and specifically SSL/mTLS (CA source, mTLS-enabled, verification-disabled warning) and HTTP calls (token-exchange POST + response status, southbound POST + response status/elapsed + pre-send retries). HTTPCodes adopted in the routes.
+
+3. Docs (1e91f7b) — collections/indexes + how-it-all-works updated for the constants-based DB (fdn-c-amp-fapis-py), the ObjectId _id, and the new unique event_id / unique lease name indexes.
+
+Every chunk: 55 tests pass, ruff clean, mypy clean (43 files).
+
+Two things worth flagging
+Database name: I used APPLICATION_MAIN_DATABASE = "fdn-c-amp-fapis-py" for the zelle collections. If SAAS/your data actually lives in AMP_MAIN_DATABASE = "amp", it's a one-line change in common/constants.py usage (the repos' _database_name).
+New indexes to provision: the mongosh runbook now includes zelle_events.event_id unique and zelle_leases.name unique — make sure those get created alongside the existing ones before serving.
