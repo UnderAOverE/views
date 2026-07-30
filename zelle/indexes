@@ -1,0 +1,17 @@
+use("fdn-c-amp-fapis-py")
+
+// 1) zelle_events — one document per maintenance event
+db.zelle_events.createIndex({ event_id: 1 }, { unique: true })              // ⚠ correctness — the facade id reads/transitions filter on
+db.zelle_events.createIndex({ status: 1 })                                  // list + sweep/watchdog scans
+db.zelle_events.createIndex({ scheduled_start: 1, scheduled_end: 1 })       // overlap detection at schedule time
+
+// 2) zelle_idempotency — schedule replay ledger
+db.zelle_idempotency.createIndex({ client_id: 1, key: 1 }, { unique: true }) // ⚠ correctness — stops duplicate/double-booked events
+
+// 3) zelle_audit — append-only INTENT/OUTCOME trail
+db.zelle_audit.createIndex({ event_id: 1 })                                 // pull one event's history
+db.zelle_audit.createIndex({ ts: 1 })                                       // time-ordered scans
+
+// 4) zelle_leases — watchdog singleton lock (only if ZELLE_WATCHDOG_ENABLED=true)
+db.zelle_leases.createIndex({ name: 1 }, { unique: true })                  // ⚠ one lease per name (singleton guarantee)
+db.zelle_leases.createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 })   // ⚠ TTL — GCs an abandoned lease from a dead replica
