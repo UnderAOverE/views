@@ -1,0 +1,30 @@
+Subject: ZOMS maintenance-event API — integration details needed
+
+Hi [EWS contact name],
+
+We're building our integration against the ZOMS maintenance-event API and have a short list of details we need confirmed before we can complete and test it (CAT). I've grouped them so you can reply inline.
+
+1. Authentication / connectivity (this is blocking us)
+
+The exact token endpoint URLs for CAT and PROD.
+The required aud value and the scope for the maintenance-event operations.
+mTLS: is it required, and if so, can you provide the CA chain — separately for the token endpoint and the API endpoints if they differ?
+Our registered orgId (the 3-character organisation id) for CAT and PROD.
+2. Schedule request fields
+
+ewsHold — the allowed values, and what each one means (e.g. self-hold vs EWS-hold behaviour).
+suppressDuplicatePayments — what it controls, and its default if omitted.
+networkNotificationId — what it represents, where we obtain the value, and whether it's required.
+Which of the optional fields are, in practice, required on your side.
+3. Schedule response
+
+Does the schedule 201 response return the maintenanceEventId synchronously, and if so, under which JSON key? We use this id for all subsequent start/complete/cancel calls.
+4. Field formats & lengths (please confirm our assumptions)
+
+Date/time format: YYYY-MM-DDTHH:MM:SS.NNNZ (UTC, three millisecond digits, literal Z).
+Max lengths: orgId 3, participantName/submittedName 50, contactName 128, contactPhone 9–12, contactEmail 255, ticketNumber 36, maintenanceEventId 36.
+contactPhone — digits only, or with country code / formatting?
+5. Error responses
+
+The response codes and body shape for the common failure cases — e.g. starting an already-started event, completing one that hasn't started, cancelling after start, and replaying a request. This lets us map your errors correctly and decide what's safe to retry.
+Happy to jump on a quick call if that's easier. Thanks in advance.
