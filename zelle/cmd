@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+
+pid_file="ose_almanac_api.pid"
+
+# Setup Mongo environment variables
+if [[ ${mongo_environment} == "uat" ]]; then
+    export MONGO_DB_SERVER_PORT_PAIRS="<uat-host:port,uat-host:port,...>"
+    export MONGO_DB_USERNAME="<uat-mongo-user>"
+    db_password=$(ngc getSecret --secretNickname <UAT_NICKNAME>)
+    export MONGO_DB_TLS_CA_CERTIFICATES="${main_directory}/src/common/security/certificates/ca-uat.pem"
+else
+    export MONGO_DB_SERVER_PORT_PAIRS="<prod-host:port,prod-host:port,...>"
+    export MONGO_DB_USERNAME="<prod-mongo-user>"
+    db_password=$(ngc getSecret --secretNickname <PROD_NICKNAME>)
+    export MONGO_DB_TLS_CA_CERTIFICATES="${main_directory}/src/common/security/certificates/ca-prod.pem"
+fi
+
+if [[ $? -ne 0 || -z "${db_password}" ]]; then
+    echo "ERROR| unable to fetch the cyberark password"
+    exit 1
+fi
+
+# The API takes one composed URI; encode the password so :@/% survive the URI parser
+encoded_db_password=$(python -c "from urllib.parse import quote_plus; import sys; print(quote_plus(sys.argv[1]))" "${db_password}")
+
+export OSE_ALMANAC_API_MONGO_URI="mongodb://${MONGO_DB_USERNAME}:${encoded_db_password}@${MONGO_DB_SERVER_PORT_PAIRS}/?authSource=admin&tls=true&tlsCAFile=${MONGO_DB_TLS_CA_CERTIFICATES}"
+export OSE_ALMANAC_API_HOST="0.0.0.0"
+export OSE_ALMANAC_API_PORT="8000"
+
+export PYTHONPATH="${main_directory}:${PYTHONPATH}"
+
+cd ${main_directory} || { echo "ERROR| failed to cd to ${main_directory}" ; exit 1 ; }
+
+source ${main_directory}/.backend-batch/bin/activate
+
+nohup python src/ose_almanac_api_main.py >> ${log_directory}/ose_almanac_api.log 2>&1 &
+echo $! > ${log_directory}/pids/"${pid_file}"
+echo "INFO| API started, PID=$(cat ${log_directory}/pids/${pid_file})"
+ose_almanac_dashboards.sh — no Mongo, no CyberArk; it only needs to find the API:
+
+
+#!/usr/bin/env bash
+
+pid_file="ose_almanac_dashboards.pid"
+
+export OSE_ALMANAC_DASHBOARDS_API_URL="http://127.0.0.1:8000"
+export PYTHONPATH="${main_directory}:${PYTHONPATH}"
+
+cd ${main_directory} || { echo "ERROR| failed to cd to ${main_directory}" ; exit 1 ; }
+
+source ${main_directory}/.backend-batch/bin/activate
+
+nohup streamlit run src/dashboards/home.py \
+    --server.address 0.0.0.0 \
+    --server.port 8501 \
+    --server.headless true \
+    >> ${log_directory}/ose_almanac_dashboards.log 2>&1 &
+echo $! > ${log_directory}/pids/"${pid_file}"
+echo "INFO| dashboards started, PID=$(cat ${log_directory}/pids/${pid_file})"
