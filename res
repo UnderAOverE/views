@@ -1,95 +1,17 @@
-What changed (the new contract)
-ZelleService.get_service(cls, mongo_client, settings, email_service) — the factory, exactly like OSEFetchService.get_service. Builds the graph from mongo_client (DB picked via settings.mongo_database_name), owns its mTLS client.
-No more register_zelle. Instead: service.startup_sweep(), service.start_watchdog() (an asyncio.create_task, like your monitor_task), and service.aclose() for teardown.
-add_zelle_exception_handlers(app) registers the error handlers.
-In main.py (where you create the app + include ose/saas routers)
-
-from src.apis.routes import zelle_events_router, zelle_admin_router
-from src.apis.dependencies.services.zelle import add_zelle_exception_handlers
-
-app.include_router(zelle_events_router)
-app.include_router(zelle_admin_router)
-add_zelle_exception_handlers(app)
-In initializer.py — imports
-
-from src.apis.config.zelle import ZelleSettings
-from src.apis.services.zelle.service import ZelleService
-from src.common.constants import IS_PRODUCTION_ENVIRONMENT   # your path
-In initializer.py — top of lifespan (with your other declarations)
-
-    zelle_service: ZelleService | None = None
-In the try: block — after mongo_client and email_service exist (exactly like your OSE services)
-
-        # Create zelle service (get_service factory, like OSEFetchService)
-        zelle_service = await ZelleService.get_service(
-            mongo_client=mongo_client,
-            settings=ZelleSettings(is_production=IS_PRODUCTION_ENVIRONMENT),
-            email_service=email_service,
-        )
-        application.state.zelle_service = zelle_service  # noqa
-        await zelle_service.startup_sweep()
-        zelle_service.start_watchdog()
-In the finally: block — next to your monitor_task cleanup
-
-        # Zelle teardown: stop watchdog + close its mTLS client
-        if zelle_service:
-            await zelle_service.aclose()
-Notes for your setup
-Everything except is_production comes from ZELLE_* env vars in the container: ZELLE_MONGO_DATABASE_NAME (now required — which DB the zelle_* collections live in), ZELLE_TOKEN_AUD, ZELLE_CLIENT_ID, ZELLE_SIGNING_KID, ZELLE_SIGNING_KEY_PATH, ZELLE_ORG_ID, ZELLE_CONTACT_*, and the mTLS paths (ZELLE_CA_CERTIFICATE_PATH, ZELLE_CLIENT_CERTIFICATE_PATH, ZELLE_CLIENT_KEY_PATH).
-It takes your mongo_client (the AsyncIOMotorClient) directly — no get_default_database() needed; it selects the DB by name from settings.
-55 tests / ruff / mypy all green; the tests now wire the app the same host way (include routers → add_zelle_exception_handlers → get_service → startup_sweep), so the test suite exercises exactly this integration path.
-One deviation from fetch.py I want to flag honestly: your OSEFetchService.get_service(cls, mongo_client) takes only mongo_client (it reads settings from the global environment_settings.ose). Zelle's get_service also takes settings and email_service as params, because its config is injected by the host (the is_production flag from your constant, and your EmailService) rather than read from a global. If you'd rather it read a module-level zelle_settings to match the signature exactly, tell me and I'll switch it.
+Scheduling a maintenance window — with the actual names
+Support person submits the booking → POST /v1/maintenance-events on the facade (routers mounted in the host app fdn-c-amp-fapis-py). Body: startTime, endTime, ticketNumber, reason. Headers: X-Client-Id (required), Idempotency-Key (recommended, a UUID), X-Correlation-Id (optional). Handler: schedule_event in routes/zelle/events.py.
+Name-tag check → the require_client_id dependency validates X-Client-Id against ZELLE_CLIENT_ALLOWLIST. Missing → 400 VALIDATION_FAILED; not on the list → 403 FORBIDDEN_ACTION.
+Sanity checks → EventService.schedule in event_service.py: pydantic window validation (422 on bad input), overlap check against existing rows in the zelle_events collection, and — if an Idempotency-Key was sent — a ledger row in zelle_idempotency (unique on client_id + key; a replay returns the stored response instead of continuing).
+Logbook, before anything is sent → an INTENT document into zelle_audit (kind: "INTENT", action: "schedule", attempt_id, actor_client_id, correlation_id) — the pair you saw in Compass.
+Sign in to Zelle → TokenBroker in token_broker.py signs an RS256 client assertion (private key at ZELLE_SIGNING_KEY_PATH, key id ZELLE_SIGNING_KID) and POSTs it to the token endpoint — CAT https://auth.zelle.cat.earlywarning.io/token, PROD https://auth.zelle.earlywarning.com/token — with aud = CAT https://auth-zelle.cat.earlywarning.io/oauth2/access/v1/token / PROD https://auth-zelle.earlywarning.com/oauth2/access/v1/token and scope maintenance-event. The access token is cached (~30 min) and reused across calls.
+Send the booking → ZomsClient.schedule in zoms_client.py → POST https://api.zelle.cat.earlywarning.io/zoms/v1/events/schedule (PROD: api.zelle.earlywarning.com). Headers: Authorization: Bearer …, request-id (fresh UUID per attempt), idempotency-id (the facade-minted UUID stored on the event). Body: orgId, participantName, submittedName, contactName/Phone/Email auto-filled from ZELLE_ORG_ID / ZELLE_CONTACT_* config, plus the window as scheduledStartDate/scheduledEndDate and ewsHold.
+Zelle's answer recorded → the 201 body's maintenanceEventId is stored as ews_event_id on the zelle_events document; an OUTCOME document (same attempt_id) goes into zelle_audit; event status → SCHEDULED. If Zelle accepted but returned no id: status PENDING_UPSTREAM_ID and the caller sees 202 instead of 201.
+Receipt to the caller → JSON with eventId (ours — the handle for everything after), status, ticketNumber, the window, and correlationId (also echoed in the X-Correlation-Id response header).
+Any failure → one envelope shape: {"error": {"code", "message", "correlationId", "retryable"}} with codes from the fixed list (VALIDATION_FAILED, CONFLICT, FORBIDDEN_ACTION, NOT_FOUND, UPSTREAM_REJECTED, UPSTREAM_UNAVAILABLE, RATE_LIMITED, UPSTREAM_UNCERTAIN), the event lands FAILED (clean rejection) or UNCERTAIN (ambiguous outcome — locked for an operator), and the zelle_audit OUTCOME row records why.
 
 
-
-
-
-main.py (where you create the app + include ose/saas routers)
-
-from src.apis.routes import zelle_events_router, zelle_admin_router
-from src.apis.dependencies.services.zelle import add_zelle_exception_handlers
-
-app.include_router(zelle_events_router)
-app.include_router(zelle_admin_router)
-add_zelle_exception_handlers(app)
-initializer.py — import
-
-from src.apis.services.zelle.service import ZelleService
-initializer.py — top of lifespan
-
-    zelle_service: ZelleService | None = None
-In the try: block — after mongo_client and email_service exist (now truly like your OSE services)
-
-        # Create zelle service (get_service factory, like OSEFetchService)
-        zelle_service = await ZelleService.get_service(
-            mongo_client=mongo_client,
-            email_service=email_service,
-        )
-        application.state.zelle_service = zelle_service  # noqa
-        await zelle_service.startup_sweep()
-        zelle_service.start_watchdog()
-In the finally: block
-
-        # Zelle teardown: stop watchdog + close its mTLS client
-        if zelle_service:
-            await zelle_service.aclose()
-The one thing to decide: how is_production gets set
-Because settings now come from the module-level accessor (reading ZELLE_* env), is_production comes from the ZELLE_IS_PRODUCTION env var. Two ways:
-
-Pure module-level (matches fetch.py exactly): set ZELLE_IS_PRODUCTION in the deployment env from your IS_PRODUCTION_ENVIRONMENT. Then the lifespan call is just get_service(mongo_client=…, email_service=…) as above.
-Keep passing the constant: inject settings for that one call —
-
-from src.apis.config.zelle import ZelleSettings
-from src.common.constants import IS_PRODUCTION_ENVIRONMENT
-zelle_service = await ZelleService.get_service(
-    mongo_client=mongo_client,
-    email_service=email_service,
-    settings=ZelleSettings(is_production=IS_PRODUCTION_ENVIRONMENT),
-)
-Both work — the first is the cleaner fetch.py match; the second reuses your Python prod constant directly.
-
-Status
-get_service(cls, mongo_client, email_service=None, settings=None, http_client=None) — mongo_client first, settings default to get_zelle_settings() (module-level), the rest optional for email/tests.
-Everything else (ZELLE_MONGO_DATABASE_NAME, token/signing/org/contact/mTLS paths) comes from ZELLE_* env vars.
-55 tests / ruff / mypy green; pushed to main (4fb77db).
-That's the full host-standard alignment: get_service factory reading module-level settings, created + swept + watchdog-started in the lifespan, aclose() in finally, routers + add_zelle_exception_handlers in main.py.
+Looking up an event — with the actual names
+By id → GET /v1/maintenance-events/{eventId}; the list → GET /v1/maintenance-events?status=SCHEDULED (filter optional). Header: X-Client-Id.
+Answered from our own records → EventService.get_event / list_events read the zelle_events collection in the Mongo database fdn-c-amp-fapis-py. No call to Zelle, no token involved — instant.
+The status values you can see: PENDING, PENDING_UPSTREAM_ID, SCHEDULED, IN_PROGRESS, COMPLETE, CANCELLED, UNCERTAIN, FAILED.
+Live check at the source → GET /v1/maintenance-events/{eventId}/upstream-status → ZomsClient.get_status → GET https://api.zelle.cat.earlywarning.io/zoms/v1/events/{maintenanceEventId} (real call, needs the token from step 5 above). Returns localStatus and upstreamStatus side by side plus checkedAt; 409 if the event has no ews_event_id yet.
