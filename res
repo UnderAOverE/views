@@ -1,24 +1,19 @@
-targets:
-
-  - primary_key: AO_Channels_gtdc
+  - primary_key: AO_Queues_gtdc
     enabled: true
     datacenter: gtdc
     poll_interval_minutes: 5
     lookback_minutes: 8
 
-    # Channel name rides in the metric_name ("MP09.GTPRDDIG01|Status"), so every
-    # channel is its own series with NO per-channel config. Do not remove this -
-    # without it all channels collapse into one "Status" series per node.
+    # Queue name rides in the metric_name ("BCBSWI.CICSE.EAST.WWWQ.REPLY.Q|Current Queue Depth"),
+    # one series per queue per node, no per-queue config. Do not remove.
     metric_name_segments: 2
 
-    # Empty = every channel the path returns is kept. New channels onboard
-    # themselves; add "<channel>|Status" lines to metric_exclude to mute noisy ones.
+    # Empty = every queue is kept; new queues onboard themselves.
+    # Mute one with "<queue>|Current Queue Depth" in metric_exclude.
     metric_include: []
     metric_exclude: []
 
-    # NODES only - the segment after WebsphereMQ. Host-qualified <host>-<qmgr>
-    # pairs; the bare aggregate nodes (GTPRDDIG01 etc.) match nothing here and
-    # are dropped. Never list channels in this field.
+    # NODES only - same 12 host-qualified pairs as the Channels target.
     instance_include:
       - "gtcrd-mqdla01p-GTPRDDIG01"
       - "gtcrd-mqdla02p-GTPRDDIG01"
@@ -40,12 +35,15 @@ targets:
       controller_ref: GCG-NA-PRD4
       credential_key: ampchat_dna
       appd_application_path: "162445_MIDDLEWARE_CLIENT_ESB"
-      metric_path: "Application Infrastructure Performance|MCAG|Custom Metrics|WebsphereMQ|*|Channels|*|Status"
+      # Slot 5 * = node (aggregate nodes dropped by instance_include);
+      # slot 7 * = queue name; literal leaf keeps only depth rows.
+      metric_path: "Application Infrastructure Performance|MCAG|Custom Metrics|WebsphereMQ|*|Queues|*|Current Queue Depth"
       controllers_database: PBWM
       controllers_collection: Controllers
 
     dimensions:
       environment: production
       csi: 162445
+      csi: 162445
       application: AO
-      component: Channel
+      component: Queue
