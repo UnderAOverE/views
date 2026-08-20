@@ -1,56 +1,51 @@
-async def send_email(
-        self,
-        to: str,
-        subject: str,
-        html_body: str,
-        cc: list[str] | None = None,
-        ) -> None:
+targets:
 
-        """
-        Sends a rich HTML email to a specific recipient without blocking the event loop.
-        Used by the zelle facade for per-attempt maintenance notifications; unlike
-        send_alert there is no production gate (the caller owns that switch) and the
-        recipient comes from the caller, not the developers list.
+  - primary_key: AO_Channels_gtdc
+    enabled: true
+    datacenter: gtdc
+    poll_interval_minutes: 5
+    lookback_minutes: 8
 
-        :param to: Recipient email address.
-        :type to: str
-        :param subject: Email subject.
-        :type subject: str
-        :param html_body: HTML email body.
-        :type html_body: str
-        :param cc: Optional CC recipient addresses.
-        :type cc: list[str] | None
-        :return: None
-        """
+    # Channel name rides in the metric_name ("MP09.GTPRDDIG01|Status"), so every
+    # channel is its own series with NO per-channel config. Do not remove this -
+    # without it all channels collapse into one "Status" series per node.
+    metric_name_segments: 2
 
-        def _sync_send() -> None:
+    # Empty = every channel the path returns is kept. New channels onboard
+    # themselves; add "<channel>|Status" lines to metric_exclude to mute noisy ones.
+    metric_include: []
+    metric_exclude: []
 
-            """Synchronous email sending function."""
+    # NODES only - the segment after WebsphereMQ. Host-qualified <host>-<qmgr>
+    # pairs; the bare aggregate nodes (GTPRDDIG01 etc.) match nothing here and
+    # are dropped. Never list channels in this field.
+    instance_include:
+      - "gtcrd-mqdla01p-GTPRDDIG01"
+      - "gtcrd-mqdla02p-GTPRDDIG01"
+      - "gtcrd-mqdla01p-GTPRDDIG02"
+      - "gtcrd-mqdla02p-GTPRDDIG02"
+      - "gtcrd-mqdla01p-GTPRDDIG03"
+      - "gtcrd-mqdla02p-GTPRDDIG03"
+      - "gtcrd-mqdla01p-GTPRDDIG04"
+      - "gtcrd-mqdla02p-GTPRDDIG04"
+      - "gtcrd-mqdla01p-GTPRDDIG05"
+      - "gtcrd-mqdla02p-GTPRDDIG05"
+      - "gtcrd-mqdla01p-GTPRDDIG06"
+      - "gtcrd-mqdla02p-GTPRDDIG06"
 
-            message = EmailMessage()
-            message.set_content(html_body, subtype="html")
+    instance_exclude: []
 
-            message["Subject"] = subject
-            message["From"] = self.from_address
-            message["To"] = to
-            if cc:
-                message["Cc"] = ", ".join(cc)
+    source_config:
+      type: appd
+      controller_ref: GCG-NA-PRD4
+      credential_key: ampchat_dna
+      appd_application_path: "162445_MIDDLEWARE_CLIENT_ESB"
+      metric_path: "Application Infrastructure Performance|MCAG|Custom Metrics|WebsphereMQ|*|Channels|*|Status"
+      controllers_database: PBWM
+      controllers_collection: Controllers
 
-            # endIf
-
-            try:
-                with smtplib.SMTP(self.smtp_server) as server:
-                    server.send_message(message)
-
-                # endWith
-
-            except Exception as smtplib_exception:
-                logger.error(f"EmailService SMTP Error: {smtplib_exception}")
-
-            # endTryExcept
-
-        # endDef
-
-        await asyncio.to_thread(_sync_send)
-
-    # endAsyncDef
+    dimensions:
+      environment: production
+      csi: 162445
+      application: AO
+      component: Channel
