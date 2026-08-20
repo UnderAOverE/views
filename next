@@ -1,747 +1,353 @@
-#!/usr/bin/env python
-
-
-#
-#
-# ----------------------------------------------------------------------------------------------------#
-#                                                                                                     #
-# File Name     : dashboards/pages/04_SRE_Business_Transactions.py.                                   #
-# Date of birth : 2026-05-20.                                                                         #
-# Version       : 1.0.0.                                                                              #
-# Author        : Shane Reddy.                                                                        #
-#                                                                                                     #
-# Explanation   : SRE Business Transactions page - catalog view of every monitored BT, surfacing      #
-#                 who onboarded it, who last edited it, and when. Sidebar filters: catalog source     #
-#                 (db, coll), sector, environment, active flag, querytool. Body shows a sortable      #
-#                 dataframe with the operationally-useful columns; a "Show raw doc" expander reveals  #
-#                 the full BT config for the selected row. Independent of the SRE Metrics page -      #
-#                 metrics is "is the live data flowing", this is "what BTs have we onboarded".        #
-# Dependencies  : streamlit, polars, core.config.sre_business_transactions, core.constants,           #
-#                 dashboards.data, sre.business_transactions.                                          #
-# Modifications : 2026-05-20 Shane Reddy - initial scaffold.                                          #
-#                                                                                                     #
-# Contact       : shanevreddy@gmail.com.                                                              #
-#                                                                                                     #
-# ----------------------------------------------------------------------------------------------------#
-#
-#
-
-
-# ----------------------------------------------------------------------------------------------------#
-# Imports.                                                                                            #
-# ----------------------------------------------------------------------------------------------------#
-
-import sys
-
-sys.dont_write_bytecode = True
-
-# External imports
-
+import os
+import glob
+import time
+import math
+import csv
+import threading
 from datetime import datetime
-from typing import Any
-
-import polars as pl
+import pandas as pd
 import streamlit as st
-
-# Internal imports
-
-from core.config.sre_business_transactions import (
-    SreBtCatalog,
-    load_sre_business_transactions_settings,
-)
-from core.config.sre_metrics import load_sre_metrics_settings
-from core.constants import UTC
-from dashboards.data import get_runtime
-from sre.business_transactions import BusinessTransactionsRepository
-
-# Local variables
-
-#: Hard upper-bound TTL on cached catalog calls. Catalog edits are rare on the
-#: SRE side, so a generous TTL keeps page load fast.
-_CACHE_HARD_TTL_S: int = 1800
-
-#: Floor "now" to this many seconds when building the cache-key bucket so the
-#: catalog refresh fires on stable boundaries instead of every page render.
-_CATALOG_BUCKET_S: int = 300
-
-#: Default columns rendered in the BT table when "Show all other fields" is OFF.
-#: `active` is rendered as a narrow glyph (`✅` / `❌` / `—`) instead of a True/
-#: False column, so it stays visible without consuming horizontal room. `name`
-#: and `displayname` are derived from the `features[]` list-of-dict (joined
-#: with commas across all features the BT covers).
-_DEFAULT_COLUMNS: list[str] = [
-    "active",
-    "appname",
-    "name",
-    "displayname",
-    "onboardinguser",
-    "last_updated_by",
-    "last_updated_on",
-]
-
-#: Additional columns shown when "Show all other fields" is ON. Inserted
-#: between the identity block and the lifecycle block in display order.
-_EXTENDED_COLUMNS: list[str] = [
-    "databasename",
-    "collectionname",
-    "batch_name",
-    "sector",
-    "interval",
-    "lob",
-    "business",
-]
-
-#: Common tz-abbrev -> UTC-offset substitutions used by `_parse_last_updated`.
-#: Pre-converting to a numeric offset lets `strptime(%z)` succeed; CPython's
-#: `%Z` directive is unreliable for non-UTC zone abbreviations.
-_TZ_ABBREV_TO_OFFSET: dict[str, str] = {
-    " EST": " -0500",
-    " EDT": " -0400",
-    " CST": " -0600",
-    " CDT": " -0500",
-    " MST": " -0700",
-    " MDT": " -0600",
-    " PST": " -0800",
-    " PDT": " -0700",
-    " UTC": " +0000",
-    " GMT": " +0000",
-}
-
-#: Format patterns `_parse_last_updated` tries in order. Add more here if a new
-#: producer ships its own variant; the helper is best-effort and falls back to
-#: None when none match (table column then renders blank for that row).
-_LAST_UPDATED_FORMATS: tuple[str, ...] = (
-    "%m/%d/%Y %H:%M %z",
-    "%m/%d/%Y %H:%M:%S %z",
-    "%Y-%m-%dT%H:%M:%S%z",
-    "%Y-%m-%dT%H:%M:%S.%f%z",
-    "%Y-%m-%d %H:%M:%S%z",
-)
-
-
-# ----------------------------------------------------------------------------------------------------#
-# Cached query helpers.                                                                               #
-# ----------------------------------------------------------------------------------------------------#
-
-def _now_bucket_iso(now_utc: datetime, ttl_seconds: int) -> str:
-
-    """
-    Floor `now_utc` to a TTL-window-aligned ISO string used as a cache key.
-
-    :param now_utc: reference "now".
-    :type now_utc: datetime
-    :param ttl_seconds: window size.
-    :type ttl_seconds: int
-    :return: ISO-format string of the floored timestamp.
-    :rtype: str
-    """
-
-    floor = datetime.fromtimestamp(
-        int(now_utc.timestamp()) // max(ttl_seconds, 1) * max(ttl_seconds, 1),
-        tz=UTC,
-    )
-    return floor.isoformat()
-
-# endDef
-
-
-@st.cache_data(ttl=_CACHE_HARD_TTL_S, show_spinner="Loading catalog…")
-def _list_catalog_cached(
-        database: str,
-        collection: str,
-        now_bucket: str,
-) -> list[dict[str, Any]]:
-
-    """
-    Cached wrapper around `BusinessTransactionsRepository.list_all`.
-
-    Returns dicts (model_dump) so the result is JSON-serializable and
-    survives Streamlit's cache hashing. Aliased field names are preserved on
-    the dump so the page can choose between the snake_case attribute names
-    (default columns) and the wire-format names (raw-doc viewer).
-
-    :param database: target Mongo database.
-    :type database: str
-    :param collection: target Mongo collection.
-    :type collection: str
-    :param now_bucket: floor-aligned cache key.
-    :type now_bucket: str
-    :return: list of catalog dicts.
-    :rtype: list[dict[str, Any]]
-    """
-
-    adapter = get_runtime().adapter
-    repo = BusinessTransactionsRepository(adapter, database, collection)
-    return [row.model_dump() for row in repo.list_all()]
-
-# endDef
-
-
-@st.cache_data(ttl=_CACHE_HARD_TTL_S, show_spinner=False)
-def _distinct_field_cached(
-        database: str,
-        collection: str,
-        field: str,
-        now_bucket: str,
-) -> list[str]:
-
-    """
-    Cached wrapper around `BusinessTransactionsRepository.distinct_field`.
-
-    :param database: target Mongo database.
-    :type database: str
-    :param collection: target Mongo collection.
-    :type collection: str
-    :param field: dotted field path to enumerate.
-    :type field: str
-    :param now_bucket: floor-aligned cache key.
-    :type now_bucket: str
-    :return: distinct values.
-    :rtype: list[str]
-    """
-
-    adapter = get_runtime().adapter
-    repo = BusinessTransactionsRepository(adapter, database, collection)
-    return repo.distinct_field(field)
-
-# endDef
-
-
-# ----------------------------------------------------------------------------------------------------#
-# Display helpers.                                                                                    #
-# ----------------------------------------------------------------------------------------------------#
-
-def _active_glyph(value: Any) -> str:
-
-    """
-    Render the `active` flag as a single-char glyph. Saves horizontal space
-    over a `True` / `False` column and reads at a glance.
-
-    :param value: raw `active` value (typically bool, occasionally None).
-    :type value: Any
-    :return: `"✅"` for True, `"❌"` for False, `"—"` for anything else.
-    :rtype: str
-    """
-
-    if value is True:
-        return "✅"
-
-    # endIf
-
-    if value is False:
-        return "❌"
-
-    # endIf
-
-    return "—"
-
-# endDef
-
-
-def _feature_strings(items: Any, key: str) -> str:
-
-    """
-    Pull `key` from every dict in a `features[]` list and join with commas.
-
-    BTs cover one or more features; each `features[]` entry is a dict with at
-    least `name` (programmatic id) and `displayname` (human-readable label).
-    Joining gives a compact column value for a multi-feature BT without
-    truncation. Non-string values are str-cast; missing keys are skipped.
-
-    :param items: row['features'] value.
-    :type items: Any
-    :param key: dict key to extract (e.g. `"name"` or `"displayname"`).
-    :type key: str
-    :return: comma-joined extracted values, or empty string when nothing matches.
-    :rtype: str
-    """
-
-    if not items or not isinstance(items, list):
-        return ""
-
-    # endIf
-
-    values: list[str] = []
-    for item in items:
-        if isinstance(item, dict):
-            value = item.get(key)
-            if value:
-                values.append(str(value))
-
-            # endIf
-
-        # endIf
-
-    # endFor
-
-    return ", ".join(values)
-
-# endDef
-
-
-def _parse_last_updated(value: Any) -> datetime | None:
-
-    """
-    Parse the catalog's `lastUpdatedOn` string into a tz-aware datetime so
-    Streamlit can sort the column chronologically (lexicographic sort of the
-    raw string puts "1/" before "10/" etc, which confuses operators).
-
-    Best-effort across the common producer formats listed in
-    `_LAST_UPDATED_FORMATS`. Falls back to None when none match - the table
-    cell renders blank for that row rather than misordering it.
-
-    :param value: raw `lastUpdatedOn` value, expected to be a string.
-    :type value: Any
-    :return: parsed datetime, or None when parsing fails.
-    :rtype: datetime | None
-    """
-
-    if not isinstance(value, str):
-        return None
-
-    # endIf
-
-    s = value.strip()
-    if not s:
-        return None
-
-    # endIf
-
-    # `%Z` in strptime is unreliable for tz abbreviations; substitute to a
-    # numeric offset that `%z` handles cleanly.
-    for abbrev, offset in _TZ_ABBREV_TO_OFFSET.items():
-        if s.endswith(abbrev):
-            s = s[: -len(abbrev)] + offset
-            break
-
-        # endIf
-
-    # endFor
-
-    for fmt in _LAST_UPDATED_FORMATS:
-        try:
-            return datetime.strptime(s, fmt)
-
-        except ValueError:
-            continue
-
-        # endTryExcept
-
-    # endFor
-
-    return None
-
-# endDef
-
-
-def _project_for_table(row: dict[str, Any]) -> dict[str, Any]:
-
-    """
-    Build the flat scalar projection of a single catalog row used by the
-    display DataFrame. Combines the raw catalog fields with derived columns
-    (`name` / `displayname` extracted from `features[]`; `active` rendered as
-    a glyph; `last_updated_on` parsed to a sortable datetime).
-
-    All values are scalars - no dicts, no lists - so polars schema inference
-    never has to reconcile heterogeneous nested shapes.
-
-    :param row: raw catalog row (one mongo doc dump).
-    :type row: dict[str, Any]
-    :return: flat dict suitable for `pl.DataFrame` construction.
-    :rtype: dict[str, Any]
-    """
+import pydeck as pdk
+from pyicloud import PyiCloudService
+
+# ==========================================
+# CONFIGURATION & PATHS
+# ==========================================
+LOG_DIR = os.path.abspath("./location_logs")
+COOKIE_DIR = os.path.expanduser("~/.pyicloud_session")
+POLL_INTERVAL_SEC = 300  # 5 minutes
+
+os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(COOKIE_DIR, exist_ok=True)
+
+st.set_page_config(page_title="Find My Tracker & Dashboard", layout="wide")
+
+# ==========================================
+# HELPER FUNCTIONS: MATH & GPS CLEANING
+# ==========================================
+def haversine_meters(lat1, lon1, lat2, lon2):
+    """Calculates distance in meters between two coordinates."""
+    R = 6371000.0  # Earth radius in meters
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2 + 
+         math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+def clean_gps_data(df: pd.DataFrame, max_accuracy_m=50.0, min_move_m=10.0, max_speed_kmh=160.0) -> pd.DataFrame:
+    """Filters out low accuracy readings, stationary GPS drift, and teleportation spikes."""
+    if df.empty or len(df) < 2:
+        return df
+
+    # 1. Filter out poor accuracy pings
+    clean_df = df[df["accuracy"] <= max_accuracy_m].copy()
+    clean_df = clean_df.sort_values("timestamp").reset_index(drop=True)
+
+    if len(clean_df) < 2:
+        return clean_df
+
+    valid_indices = [0]
+
+    # 2. Filter displacement and impossible speeds
+    for i in range(1, len(clean_df)):
+        last_idx = valid_indices[-1]
+        
+        lat1, lon1 = clean_df.loc[last_idx, ["latitude", "longitude"]]
+        lat2, lon2 = clean_df.loc[i, ["latitude", "longitude"]]
+        t1, t2 = clean_df.loc[last_idx, "timestamp"], clean_df.loc[i, "timestamp"]
+
+        dist_m = haversine_meters(lat1, lon1, lat2, lon2)
+        dt_sec = (t2 - t1).total_seconds()
+        speed_kmh = ((dist_m / 1000.0) / (dt_sec / 3600.0)) if dt_sec > 0 else 0.0
+
+        if dist_m >= min_move_m and speed_kmh <= max_speed_kmh:
+            valid_indices.append(i)
+
+    return clean_df.iloc[valid_indices].reset_index(drop=True)
+
+def calculate_trip_stats(df: pd.DataFrame):
+    """Calculates total distance, duration, and average speed."""
+    if len(df) < 2:
+        return {
+            "dist_km": 0.0, "dist_mi": 0.0,
+            "duration_hrs": 0.0, "duration_min": 0,
+            "avg_speed_kmh": 0.0, "avg_speed_mph": 0.0
+        }
+
+    total_dist_km = 0.0
+    coords = df[["latitude", "longitude"]].values
+
+    for i in range(1, len(coords)):
+        lat1, lon1 = coords[i-1]
+        lat2, lon2 = coords[i]
+        total_dist_km += haversine_meters(lat1, lon1, lat2, lon2) / 1000.0
+
+    time_delta = df["timestamp"].max() - df["timestamp"].min()
+    duration_hrs = time_delta.total_seconds() / 3600.0
+    duration_min = int(time_delta.total_seconds() / 60)
+    avg_speed_kmh = (total_dist_km / duration_hrs) if duration_hrs > 0 else 0.0
 
     return {
-        "active": _active_glyph(row.get("active")),
-        "appname": row.get("appname"),
-        "name": _feature_strings(row.get("features"), "name"),
-        "displayname": _feature_strings(row.get("features"), "displayname"),
-        "databasename": row.get("databasename"),
-        "collectionname": row.get("collectionname"),
-        "batch_name": row.get("batch_name"),
-        "sector": row.get("sector"),
-        "interval": row.get("interval"),
-        "lob": row.get("lob"),
-        "business": row.get("business"),
-        "onboardinguser": row.get("onboardinguser"),
-        "last_updated_by": row.get("last_updated_by"),
-        "last_updated_on": _parse_last_updated(row.get("last_updated_on")),
+        "dist_km": total_dist_km,
+        "dist_mi": total_dist_km * 0.621371,
+        "duration_hrs": duration_hrs,
+        "duration_min": duration_min,
+        "avg_speed_kmh": avg_speed_kmh,
+        "avg_speed_mph": avg_speed_kmh * 0.621371
     }
 
-# endDef
+# ==========================================
+# BACKGROUND LOGGER THREAD WORKER
+# ==========================================
+def run_logger_loop(apple_id, password):
+    """Background worker that continuously polls location and rotates CSVs hourly."""
+    try:
+        api = PyiCloudService(apple_id, password, cookie_directory=COOKIE_DIR)
+        while True:
+            now = datetime.now()
+            filename = f"locations_{now.strftime('%Y-%m-%d_%H00')}.csv"
+            filepath = os.path.join(LOG_DIR, filename)
+            file_exists = os.path.isfile(filepath)
 
+            with open(filepath, mode="a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                if not file_exists:
+                    writer.writerow(["timestamp", "device_name", "latitude", "longitude", "battery", "accuracy"])
 
-# ----------------------------------------------------------------------------------------------------#
-# Page.                                                                                               #
-# ----------------------------------------------------------------------------------------------------#
+                for device in api.devices:
+                    name = device.get("name")
+                    battery = device.get("batteryLevel")
+                    loc = device.location()
+                    
+                    if loc:
+                        writer.writerow([
+                            datetime.now().isoformat(),
+                            name,
+                            loc["latitude"],
+                            loc["longitude"],
+                            round(battery * 100) if battery else "N/A",
+                            loc.get("accuracy", 0)
+                        ])
+            time.sleep(POLL_INTERVAL_SEC)
+    except Exception as e:
+        print(f"Logger Thread Exception: {e}")
 
-st.set_page_config(
-    page_title="SRE Business Transactions - AMP Analytics Platform",
-    layout="wide",
-)
-st.title("SRE Business Transactions")
-st.caption(
-    "Catalog of every onboarded business transaction. Each row tells you which "
-    "(database, collection) the live SREData lives in, who onboarded it, and who "
-    "last edited it. Use this to answer 'is this BT actually being scraped?' and "
-    "'who do I ask about this BT?' before drilling into the SRE Metrics page."
-)
+# ==========================================
+# STREAMLIT UI & AUTHENTICATION
+# ==========================================
+st.sidebar.title("🔐 Apple ID Setup")
 
-settings = load_sre_business_transactions_settings()
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
 
-if not settings.catalogs:
-    st.info(
-        "`conf/sre_business_transactions.yaml` declares no catalogs. Add a "
-        "`catalogs:` list with at least one `{name, display_name, database, "
-        "collection}` entry to populate this page."
-    )
+apple_id = st.sidebar.text_input("Apple ID Email", value=st.session_state.get("apple_id", ""))
+apple_pwd = st.sidebar.text_input("Password", type="password", value=st.session_state.get("apple_pwd", ""))
+
+if st.sidebar.button("Connect & Start Logger"):
+    if apple_id and apple_pwd:
+        try:
+            api = PyiCloudService(apple_id, apple_pwd, cookie_directory=COOKIE_DIR)
+            st.session_state.api = api
+            st.session_state.apple_id = apple_id
+            st.session_state.apple_pwd = apple_pwd
+            
+            if api.requires_2fa:
+                st.session_state.needs_2fa = True
+            else:
+                st.session_state.logged_in = True
+                st.session_state.needs_2fa = False
+                st.sidebar.success("Successfully Authenticated!")
+        except Exception as e:
+            st.sidebar.error(f"Login failed: {e}")
+
+if st.session_state.get("needs_2fa", False):
+    st.sidebar.warning("Two-Factor Authentication Required")
+    code_2fa = st.sidebar.text_input("Enter 6-Digit 2FA Code")
+    if st.sidebar.button("Verify Code"):
+        if st.session_state.api.validate_2fa_code(code_2fa):
+            st.session_state.logged_in = True
+            st.session_state.needs_2fa = False
+            st.sidebar.success("2FA Verified!")
+            st.rerun()
+        else:
+            st.sidebar.error("Invalid 2FA Code")
+
+# Start background thread if authenticated
+if st.session_state.logged_in:
+    if "thread_started" not in st.session_state:
+        logger_thread = threading.Thread(
+            target=run_logger_loop, 
+            args=(st.session_state.apple_id, st.session_state.apple_pwd), 
+            daemon=True
+        )
+        logger_thread.start()
+        st.session_state.thread_started = True
+        st.sidebar.info("🟢 Background Logger Active")
+
+# ==========================================
+# DATA LOADING & DASHBOARD
+# ==========================================
+st.title("📍 Find My Movement Dashboard")
+
+@st.cache_data(ttl=15)
+def load_all_logs():
+    files = glob.glob(os.path.join(LOG_DIR, "locations_*.csv"))
+    if not files:
+        return pd.DataFrame()
+    
+    df_list = []
+    for filepath in files:
+        try:
+            df_list.append(pd.read_csv(filepath))
+        except Exception:
+            continue
+            
+    if not df_list:
+        return pd.DataFrame()
+
+    full_df = pd.concat(df_list, ignore_index=True)
+    full_df["timestamp"] = pd.to_datetime(full_df["timestamp"])
+    return full_df
+
+df = load_all_logs()
+
+if df.empty:
+    st.warning("No location logs found yet. Connect your Apple ID in the sidebar to start logging data.")
     st.stop()
 
-# endIf
+# --- Sidebar Dashboard Filters ---
+st.sidebar.divider()
+st.sidebar.header("Filter Options")
 
+unit_system = st.sidebar.radio("Units", options=["Metric (km, km/h)", "Imperial (mi, mph)"])
 
-# ----------------------------------------------------------------------------------------------------#
-# Refresh + sidebar.                                                                                  #
-# ----------------------------------------------------------------------------------------------------#
+# 1. Person/Device Filter
+devices = sorted(df["device_name"].dropna().unique().tolist())
+selected_device = st.sidebar.selectbox("Select Person / Device", options=devices)
 
-ref_col, ts_col = st.columns([1, 6])
-with ref_col:
-    if st.button(
-        "Refresh",
-        key="sre_bt_refresh",
-        help="Re-fetch the catalog from Mongo and rebuild every dropdown.",
-    ):
-        _list_catalog_cached.clear()           # type: ignore[attr-defined]
-        _distinct_field_cached.clear()         # type: ignore[attr-defined]
-        st.rerun()
+# 2. Date Filter
+df["date"] = df["timestamp"].dt.date
+available_dates = sorted(df["date"].unique(), reverse=True)
+selected_date = st.sidebar.date_input("Select Date", value=available_dates[0])
 
-    # endIf
+# Slice dataset by device & date
+filtered_df = df[
+    (df["device_name"] == selected_device) & 
+    (df["date"] == selected_date)
+].sort_values("timestamp")
 
-# endWith
-
-with ts_col:
-    st.caption(f"Loaded at: {datetime.now(UTC).isoformat(timespec='seconds')}")
-
-# endWith
-
-st.sidebar.subheader("Catalog source")
-
-catalog_labels: dict[str, SreBtCatalog] = {
-    f"{c.display_name} ({c.database}.{c.collection})": c for c in settings.catalogs
-}
-picked_label = st.sidebar.selectbox(
-    "Catalog",
-    options=list(catalog_labels.keys()),
-    index=0,
-    key="sre_bt_catalog",
-)
-catalog = catalog_labels[picked_label]
-
-now_utc = datetime.now(UTC)
-now_bucket = _now_bucket_iso(now_utc, _CATALOG_BUCKET_S)
-
-
-# ----------------------------------------------------------------------------------------------------#
-# Sidebar filters.                                                                                    #
-# ----------------------------------------------------------------------------------------------------#
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("Filters")
-
-sectors = _distinct_field_cached(catalog.database, catalog.collection, "sector", now_bucket)
-environments = _distinct_field_cached(catalog.database, catalog.collection, "environment", now_bucket)
-querytools = _distinct_field_cached(catalog.database, catalog.collection, "querytool", now_bucket)
-
-picked_sectors: list[str] = st.sidebar.multiselect(
-    "Sector",
-    options=sectors,
-    default=[],
-    key="sre_bt_sectors",
-    help="Empty = include all sectors.",
-)
-
-picked_envs: list[str] = st.sidebar.multiselect(
-    "Environment",
-    options=environments,
-    default=[],
-    key="sre_bt_envs",
-    help="Empty = include all environments.",
-)
-
-picked_tools: list[str] = st.sidebar.multiselect(
-    "Query tool",
-    options=querytools,
-    default=[],
-    key="sre_bt_tools",
-    help="Empty = include every querytool (Splunk / AppD / ELK / …).",
-)
-
-active_filter: str = st.sidebar.radio(
-    "Active flag",
-    options=["Any", "Active only", "Inactive only"],
-    index=0,
-    key="sre_bt_active",
-)
-
-# FCA filter: a BT counts as FCA when ANY of its `features` is in the
-# `fca_features` list maintained alongside the SRE Metrics page in
-# `conf/sre_metrics.yaml`. Shared list across pages so the operator only
-# curates the FCA set in one place.
-fca_features_yaml: tuple[str, ...] = tuple(load_sre_metrics_settings().fca_features)
-
-if fca_features_yaml:
-    fca_only = st.sidebar.toggle(
-        "FCA only",
-        value=False,
-        key="sre_bt_fca_only",
-        help=(
-            f"When ON, the catalog is filtered to BTs whose `features` overlap "
-            f"the {len(fca_features_yaml)} Franchise Critical Application(s) listed "
-            "under `fca_features` in `conf/sre_metrics.yaml`."
-        ),
-    )
-
-else:
-    st.sidebar.toggle(
-        "FCA only",
-        value=False,
-        disabled=True,
-        key="sre_bt_fca_only_disabled",
-        help="`fca_features` is empty in `conf/sre_metrics.yaml` - nothing to filter to.",
-    )
-    fca_only = False
-
-# endIfElse
-
-
-# ----------------------------------------------------------------------------------------------------#
-# Body.                                                                                               #
-# ----------------------------------------------------------------------------------------------------#
-
-rows: list[dict[str, Any]] = _list_catalog_cached(
-    catalog.database, catalog.collection, now_bucket,
-)
-
-if not rows:
-    st.warning(
-        f"No documents in `{catalog.database}.{catalog.collection}`. Either the "
-        "catalog is empty or the namespace is misconfigured."
-    )
+if filtered_df.empty:
+    st.info("No location points recorded for this device on the selected date.")
     st.stop()
 
-# endIf
+# 3. Timeline Slider
+min_time = filtered_df["timestamp"].min().time()
+max_time = filtered_df["timestamp"].max().time()
 
-
-def _matches_fca(items: Any, fca_set: set[str]) -> bool:
-
-    """
-    True when any feature in `items` matches the FCA set by id or name.
-
-    The BT catalog's `features` field is producer-permissive: each item is
-    either a plain string (programmatic id) or a dict carrying `id` and
-    `name` keys plus producer-specific extras. We check both keys so
-    whichever convention the catalog uses still hits the FCA set.
-
-    :param items: row['features'] value - typically a list of strings or
-        a list of dicts; tolerant of None / scalar surprises.
-    :type items: Any
-    :param fca_set: pre-computed set of FCA Feature ids for fast lookup.
-    :type fca_set: set[str]
-    :return: True if any item matches; False otherwise.
-    :rtype: bool
-    """
-
-    if not items or not isinstance(items, list):
-        return False
-
-    # endIf
-
-    for item in items:
-        if isinstance(item, str):
-            if item in fca_set:
-                return True
-
-            # endIf
-
-        elif isinstance(item, dict):
-            if item.get("id") in fca_set or item.get("name") in fca_set:
-                return True
-
-            # endIf
-
-        # endIfElif
-
-    # endFor
-
-    return False
-
-# endDef
-
-
-# All filtering happens on the raw Python list of dicts, NOT through polars.
-# Reason: BT catalog rows carry heterogeneous nested fields (`features` is
-# list-of-dict with variable keys; `mongoDetails` is sometimes `{}` and
-# sometimes populated; `datacenters` is sometimes a list and sometimes
-# absent). Building a polars DataFrame from the raw rows trips polars'
-# struct-schema inference - it can't reconcile `mongoDetails: {}` with
-# `mongoDetails: {"some": "key"}`. We sidestep that entirely by only handing
-# polars a flat projection of scalar display columns AFTER all filters run.
-fca_set: set[str] = set(fca_features_yaml)
-
-filtered_rows: list[dict[str, Any]] = []
-for row in rows:
-    if picked_sectors and row.get("sector") not in picked_sectors:
-        continue
-
-    # endIf
-
-    if picked_envs and row.get("environment") not in picked_envs:
-        continue
-
-    # endIf
-
-    if picked_tools and row.get("querytool") not in picked_tools:
-        continue
-
-    # endIf
-
-    active_value = row.get("active")
-    if active_filter == "Active only" and active_value is not True:
-        continue
-
-    # endIf
-
-    if active_filter == "Inactive only" and active_value is True:
-        continue
-
-    # endIf
-
-    if fca_only and fca_set and not _matches_fca(row.get("features"), fca_set):
-        continue
-
-    # endIf
-
-    filtered_rows.append(row)
-
-# endFor
-
-
-# ---- Summary metric cards --------------------------------------------------
-
-total = len(filtered_rows)
-active_count = sum(1 for r in filtered_rows if r.get("active") is True)
-inactive_count = total - active_count
-distinct_apps = len({r.get("appname") for r in filtered_rows if r.get("appname")})
-distinct_users = len({r.get("onboardinguser") for r in filtered_rows if r.get("onboardinguser")})
-
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Total BTs", f"{total:,}")
-c2.metric("Active", f"{active_count:,}")
-c3.metric("Inactive", f"{inactive_count:,}")
-c4.metric("Distinct apps", f"{distinct_apps:,}")
-c5.metric("Distinct onboarders", f"{distinct_users:,}")
-
-
-# ---- Catalog table ---------------------------------------------------------
-
-st.markdown("---")
-st.subheader("Catalog")
-st.caption(
-    "Sortable / scrollable table of every catalog row matching the sidebar filters. "
-    "Click a column header to sort - `last_updated_on` sorts chronologically. "
-    "Toggle 'Show all other fields' to surface technical / business metadata "
-    "(databasename, collectionname, batch_name, sector, interval, lob, business)."
+time_range = st.sidebar.slider(
+    "Timeline Window",
+    value=(min_time, max_time),
+    format="HH:mm"
 )
 
-show_all = st.toggle(
-    "Show all other fields",
-    value=False,
-    key="sre_bt_show_all_fields",
-    help=(
-        "OFF (default): identity + lifecycle columns only "
-        "(active / appname / name / displayname / onboardinguser / "
-        "last_updated_by / last_updated_on). "
-        "ON: also surfaces databasename / collectionname / batch_name / sector / "
-        "interval / lob / business between the identity and lifecycle blocks."
-    ),
-)
+# Apply timeline filter
+raw_timeline = filtered_df[
+    (filtered_df["timestamp"].dt.time >= time_range[0]) & 
+    (filtered_df["timestamp"].dt.time <= time_range[1])
+]
 
-if not filtered_rows:
-    st.info("No rows match the selected filters.")
+# Clean GPS noise/drift
+cleaned_timeline = clean_gps_data(raw_timeline)
 
+# --- STATS SUMMARY BAR ---
+stats = calculate_trip_stats(cleaned_timeline)
+
+col1, col2, col3, col4 = st.columns(4)
+if "Metric" in unit_system:
+    col1.metric("Distance Traveled", f"{stats['dist_km']:.2f} km")
+    col2.metric("Avg Speed", f"{stats['avg_speed_kmh']:.1f} km/h")
 else:
-    # Flat projection: ONLY the scalar display columns. Nested / list fields
-    # (`features`, `datacenters`, `mongoDetails`, etc.) are deliberately
-    # excluded so polars never sees them and never has to infer a struct
-    # schema across rows. `last_updated_on` is parsed to a real datetime
-    # inside `_project_for_table` so the column sorts chronologically.
-    display_rows = [_project_for_table(r) for r in filtered_rows]
+    col1.metric("Distance Traveled", f"{stats['dist_mi']:.2f} mi")
+    col2.metric("Avg Speed", f"{stats['avg_speed_mph']:.1f} mph")
 
-    if show_all:
-        # Insert the extended columns between the identity block (active /
-        # appname / name / displayname) and the lifecycle block
-        # (onboardinguser / last_updated_by / last_updated_on).
-        identity_end = _DEFAULT_COLUMNS.index("displayname") + 1
-        columns_to_render = (
-            _DEFAULT_COLUMNS[:identity_end]
-            + _EXTENDED_COLUMNS
-            + _DEFAULT_COLUMNS[identity_end:]
+col3.metric("Duration", f"{stats['duration_min']} mins")
+col4.metric("Valid GPS Points", f"{len(cleaned_timeline)}")
+
+st.divider()
+
+# --- MAIN MAP & TABLE LAYOUT ---
+col_map, col_table = st.columns([2, 1])
+
+with col_map:
+    st.subheader(f"Route Map: {selected_device}")
+    
+    if not cleaned_timeline.empty:
+        path_df = cleaned_timeline.sort_values("timestamp").copy()
+        coords = path_df[["longitude", "latitude"]].values.tolist()
+        
+        # 1. Path Line (Blue)
+        layer_path = pdk.Layer(
+            "PathLayer",
+            data=[{"path": coords}],
+            get_path="path",
+            get_color="[50, 150, 250, 220]",
+            width_min_pixels=3,
         )
 
+        # 2. Intermediate Waypoints (Translucent Blue)
+        middle_points = path_df.iloc[1:-1] if len(path_df) > 2 else pd.DataFrame()
+        layers = [layer_path]
+        
+        if not middle_points.empty:
+            layers.append(pdk.Layer(
+                "ScatterplotLayer",
+                data=middle_points,
+                get_position=["longitude", "latitude"],
+                get_color="[100, 100, 250, 160]",
+                get_radius=20,
+                radius_min_pixels=3,
+                pickable=True,
+            ))
+
+        # 3. Start Point (Green)
+        layers.append(pdk.Layer(
+            "ScatterplotLayer",
+            data=path_df.iloc[[0]],
+            get_position=["longitude", "latitude"],
+            get_color="[40, 200, 40, 255]",
+            get_radius=50,
+            radius_min_pixels=7,
+            pickable=True,
+        ))
+
+        # 4. End / Current Point (Red)
+        layers.append(pdk.Layer(
+            "ScatterplotLayer",
+            data=path_df.iloc[[-1]],
+            get_position=["longitude", "latitude"],
+            get_color="[230, 40, 40, 255]",
+            get_radius=60,
+            radius_min_pixels=9,
+            pickable=True,
+        ))
+
+        # Render Deck
+        st.pydeck_chart(pdk.Deck(
+            layers=layers,
+            initial_view_state=pdk.ViewState(
+                latitude=path_df["latitude"].mean(),
+                longitude=path_df["longitude"].mean(),
+                zoom=14,
+                pitch=0
+            ),
+            map_style="mapbox://styles/mapbox/light-v10",
+            tooltip={"text": "Time: {timestamp}\nBattery: {battery}%\nAccuracy: {accuracy}m"}
+        ))
     else:
-        columns_to_render = list(_DEFAULT_COLUMNS)
+        st.write("No location data available in this time slice.")
 
-    # endIfElse
-
-    display_df = pl.DataFrame(display_rows, strict=False).select(columns_to_render)
-    st.dataframe(display_df, width="stretch", hide_index=True)
-
-# endIfElse
-
-
-# ---- Raw doc viewer --------------------------------------------------------
-
-st.markdown("---")
-st.subheader("Raw doc")
-st.caption(
-    "Pick an appname to inspect the full BT config - useful when you need to "
-    "see fields not in the table above (features / datacenters / lifecycle metadata)."
-)
-
-if filtered_rows:
-    app_options = sorted({
-        str(r["appname"]) for r in filtered_rows if r.get("appname")
-    })
-
-    if app_options:
-        picked_app = st.selectbox(
-            "Appname",
-            options=app_options,
-            index=0,
-            key="sre_bt_raw_app",
-        )
-
-        match_rows = [r for r in filtered_rows if str(r.get("appname") or "") == picked_app]
-        for idx, row in enumerate(match_rows):
-            with st.expander(
-                f"{row.get('databasename', '?')}.{row.get('collectionname', '?')} ({picked_app})",
-                expanded=(idx == 0 and len(match_rows) == 1),
-            ):
-                st.json(row, expanded=False)
-
-            # endWith
-
-        # endFor
-
-    else:
-        st.info("No `appname` field on the filtered rows - skipping raw-doc viewer.")
-
-    # endIfElse
-
-else:
-    st.info("No rows to inspect.")
-
-# endIfElse
-
-
-# end_dashboards/pages/04_SRE_Business_Transactions.py
+with col_table:
+    st.subheader("Location Log")
+    display_df = cleaned_timeline[["timestamp", "battery", "latitude", "longitude"]].copy()
+    display_df["timestamp"] = display_df["timestamp"].dt.strftime("%H:%M:%S")
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
