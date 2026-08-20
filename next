@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 import pydeck as pdk
 from pyicloud import PyiCloudService
+from pyicloud.exceptions import PyiCloudAPIResponseException
 
 # ==========================================
 # CONFIGURATION & PATHS
@@ -21,6 +22,9 @@ os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(COOKIE_DIR, exist_ok=True)
 
 st.set_page_config(page_title="Find My Tracker & Dashboard", layout="wide")
+
+# Global status dict to communicate thread errors to Streamlit UI
+THREAD_STATUS = {"active": False, "error": None}
 
 # ==========================================
 # HELPER FUNCTIONS: MATH & GPS CLEANING
@@ -39,7 +43,6 @@ def clean_gps_data(df: pd.DataFrame, max_accuracy_m=50.0, min_move_m=10.0, max_s
     if df.empty or len(df) < 2:
         return df
 
-    # 1. Filter out poor accuracy pings
     clean_df = df[df["accuracy"] <= max_accuracy_m].copy()
     clean_df = clean_df.sort_values("timestamp").reset_index(drop=True)
 
@@ -48,7 +51,6 @@ def clean_gps_data(df: pd.DataFrame, max_accuracy_m=50.0, min_move_m=10.0, max_s
 
     valid_indices = [0]
 
-    # 2. Filter displacement and impossible speeds
     for i in range(1, len(clean_df)):
         last_idx = valid_indices[-1]
         
@@ -101,9 +103,20 @@ def calculate_trip_stats(df: pd.DataFrame):
 # ==========================================
 def run_logger_loop(apple_id, password):
     """Background worker that continuously polls location and rotates CSVs hourly."""
+    global THREAD_STATUS
+    THREAD_STATUS["active"] = True
+    THREAD_STATUS["error"] = None
+    
     try:
         api = PyiCloudService(apple_id, password, cookie_directory=COOKIE_DIR)
+        
         while True:
+            # Check if session expired
+            if api.requires_2fa:
+                THREAD_STATUS["active"] = False
+                THREAD_STATUS["error"] = "Session expired (2FA required). Re-authenticate in the sidebar."
+                break
+
             now = datetime.now()
             filename = f"locations_{now.strftime('%Y-%m-%d_%H00')}.csv"
             filepath = os.path.join(LOG_DIR, filename)
@@ -129,8 +142,13 @@ def run_logger_loop(apple_id, password):
                             loc.get("accuracy", 0)
                         ])
             time.sleep(POLL_INTERVAL_SEC)
+
+    except PyiCloudAPIResponseException as e:
+        THREAD_STATUS["active"] = False
+        THREAD_STATUS["error"] = f"Apple API Session Error: {e}"
     except Exception as e:
-        print(f"Logger Thread Exception: {e}")
+        THREAD_STATUS["active"] = False
+        THREAD_STATUS["error"] = f"Logger Error: {e}"
 
 # ==========================================
 # STREAMLIT UI & AUTHENTICATION
@@ -182,7 +200,11 @@ if st.session_state.logged_in:
         )
         logger_thread.start()
         st.session_state.thread_started = True
+
+    if THREAD_STATUS["active"]:
         st.sidebar.info("🟢 Background Logger Active")
+    elif THREAD_STATUS["error"]:
+        st.sidebar.error(f"🔴 {THREAD_STATUS['error']}")
 
 # ==========================================
 # DATA LOADING & DASHBOARD
@@ -215,13 +237,13 @@ if df.empty:
     st.warning("No location logs found yet. Connect your Apple ID in the sidebar to start logging data.")
     st.stop()
 
-# --- Sidebar Dashboard Filters ---
+# --- Sidebar Filters ---
 st.sidebar.divider()
 st.sidebar.header("Filter Options")
 
 unit_system = st.sidebar.radio("Units", options=["Metric (km, km/h)", "Imperial (mi, mph)"])
 
-# 1. Person/Device Filter
+# 1. Device Filter
 devices = sorted(df["device_name"].dropna().unique().tolist())
 selected_device = st.sidebar.selectbox("Select Person / Device", options=devices)
 
@@ -250,13 +272,13 @@ time_range = st.sidebar.slider(
     format="HH:mm"
 )
 
-# Apply timeline filter
+# Filter by time window
 raw_timeline = filtered_df[
     (filtered_df["timestamp"].dt.time >= time_range[0]) & 
     (filtered_df["timestamp"].dt.time <= time_range[1])
 ]
 
-# Clean GPS noise/drift
+# Filter GPS drift
 cleaned_timeline = clean_gps_data(raw_timeline)
 
 # --- STATS SUMMARY BAR ---
@@ -285,7 +307,7 @@ with col_map:
         path_df = cleaned_timeline.sort_values("timestamp").copy()
         coords = path_df[["longitude", "latitude"]].values.tolist()
         
-        # 1. Path Line (Blue)
+        # 1. Connected Path Line (Blue)
         layer_path = pdk.Layer(
             "PathLayer",
             data=[{"path": coords}],
@@ -331,7 +353,6 @@ with col_map:
             pickable=True,
         ))
 
-        # Render Deck
         st.pydeck_chart(pdk.Deck(
             layers=layers,
             initial_view_state=pdk.ViewState(
