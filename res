@@ -1,13 +1,11 @@
-    instance_include:
-      - "swcrd-mqdla01p-SWPRDDIG01"
-      - "swcrd-mqdla02p-SWPRDDIG01"
-      - "swcrd-mqdla01p-SWPRDDIG02"
-      - "swcrd-mqdla02p-SWPRDDIG02"
-      - "swcrd-mqdla01p-SWPRDDIG03"
-      - "swcrd-mqdla02p-SWPRDDIG03"
-      - "swcrd-mqdla01p-SWPRDDIG04"
-      - "swcrd-mqdla02p-SWPRDDIG04"
-      - "swcrd-mqdla01p-SWPRDDIG05"
-      - "swcrd-mqdla02p-SWPRDDIG05"
-      - "swcrd-mqdla01p-SWPRDDIG06"
-      - "swcrd-mqdla02p-SWPRDDIG06"
+import sys
+import httpx
+
+URL = "https://auth.zelle.cat.earlywarning.io/token"
+
+for proxy in sys.argv[1:]:
+    try:
+        r = httpx.get(URL, proxy=proxy, timeout=10)
+        print(f"{proxy}  ->  WORKS (HTTP {r.status_code})")
+    except Exception as e:
+        print(f"{proxy}  ->  FAILED ({type(e).__name__}: {e})")
