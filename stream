@@ -1,0 +1,430 @@
+#!/usr/bin/env python3
+"""
+ocsp_dashboard.py - Streamlit dashboard for ocspcheck results stored in MongoDB.
+
+Layout (top to bottom):
+  1. Status tiles       one per responder: health now, vs its own baseline
+  2. Exceptions table   only rows where something crossed a threshold (empty = good day)
+  3. VA processing time one line per VA, smoothed, with each node's baseline band
+  4. Status timeline    good / error strip per responder
+  5. Details (collapsed) load-balancer DNS + resolved node, raw ms, TCP, run log
+
+Run:
+  pip install streamlit pymongo pandas plotly
+  export OCSP_MONGO_URI="mongodb://host:27017"  OCSP_MONGO_DB="pki"  OCSP_MONGO_COLL="ocsp_checks"
+  streamlit run ocsp_dashboard.py
+
+  # try it without Mongo, on generated data:
+  OCSP_DEMO=1 streamlit run ocsp_dashboard.py
+
+Reads the ocspcheck JSON documents as-is (one per run). Needs these fields:
+  run_at, run_from, verdict, ocsp[].label, ocsp[].status, ocsp[].ms,
+  ocsp[].network.{dns_ms,tcp_ms,addresses}, ocsp[].checked_at
+"""
+
+import os
+import datetime as dt
+
+import pandas as pd
+import streamlit as st
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+# ----------------------------------------------------------------- settings
+MONGO_URI = os.environ.get("OCSP_MONGO_URI", "mongodb://localhost:27017")
+MONGO_DB = os.environ.get("OCSP_MONGO_DB", "pki")
+MONGO_COLL = os.environ.get("OCSP_MONGO_COLL", "ocsp_checks")
+DEMO = os.environ.get("OCSP_DEMO", "") == "1"
+
+LB_LABEL = "load balancer"          # label ocspcheck gives the lb_url row
+BASELINE_HOURS = 24                 # window for each node's median
+SMOOTH_SAMPLES = 3                  # rolling median over N samples (3 x 5 min = 15 min)
+WARN_X, ALERT_X = 2.0, 3.0          # multiples of the node's own median
+ALERT_ABS_PROC_MS = 500             # absolute ceiling on VA processing time
+ALERT_ABS_MS = 1000                 # absolute ceiling on end-to-end ms
+DNS_WARN_X, DNS_ALERT_MS = 2.0, 500
+CONSECUTIVE = 2                     # breaches in a row before it counts as an alert
+
+GREEN, AMBER, RED, GREY = "#1a7f37", "#9a6700", "#cf222e", "#8c959f"
+PALETTE = ["#0969da", "#8250df", "#bf8700", "#1a7f37", "#cf222e", "#6e7781"]
+
+
+# --------------------------------------------------------------- load data
+@st.cache_data(ttl=60, show_spinner=False)
+def load_docs(hours: int) -> pd.DataFrame:
+    """Return one row per (run, responder). Cached for 60 s."""
+    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)
+    if DEMO:
+        docs = demo_docs(since)
+    else:
+        from pymongo import MongoClient
+        coll = MongoClient(MONGO_URI)[MONGO_DB][MONGO_COLL]
+        docs = list(coll.find({"run_at": {"$gte": since.isoformat()}},
+                              {"_id": 0, "run_at": 1, "run_from": 1, "verdict": 1, "ocsp": 1}))
+    rows = []
+    for d in docs:
+        for o in d.get("ocsp", []):
+            net = o.get("network") or {}
+            ms, tcp = o.get("ms"), net.get("tcp_ms")
+            rows.append({
+                "t": pd.to_datetime(o.get("checked_at") or d["run_at"], utc=True),
+                "run_at": pd.to_datetime(d["run_at"], utc=True),
+                "probe": d.get("run_from", "?"),
+                "verdict": d.get("verdict"),
+                "node": o["label"],
+                "status": o.get("status") or "unknown",
+                "ms": ms,
+                "tcp_ms": tcp,
+                "dns_ms": net.get("dns_ms"),
+                "ip": (net.get("addresses") or [None])[0],
+                "proc_ms": (ms - 2 * tcp) if (ms is not None and tcp is not None) else None,
+                "responder": o.get("responder"),
+            })
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    return df.sort_values("t").reset_index(drop=True)
+
+
+def demo_docs(since):
+    """Synthetic 24 h of data with one sick node and one outage, for layout testing."""
+    import random
+    random.seed(7)
+    nodes = {
+        "VA pkivamwp01.nam.nsroot.net": (110, 33, "169.172.76.136"),
+        "VA pkivamwp02.nam.nsroot.net": (110, 33, "169.172.76.137"),
+        "VA pkivaswc01.nam.nsroot.net": (80, 8, "169.177.148.175"),
+        "VA pkivaswc02.nam.nsroot.net": (80, 8, "169.177.148.174"),
+    }
+    ips = [v[2] for v in nodes.values()]
+    docs, t = [], since
+    end = dt.datetime.now(dt.timezone.utc)
+    while t < end:
+        hrs_left = (end - t).total_seconds() / 3600
+        ocsp = []
+        lb_ip = random.choice(ips)
+        lb_base, lb_tcp = (80, 8) if lb_ip.startswith("169.177") else (110, 33)
+        ocsp.append(mk(LB_LABEL, "http://ngocsp.citi.com/ocsp", lb_base, lb_tcp, lb_ip, t,
+                       dns=random.gauss(97 if hrs_left > 3 else 55, 6)))
+        for name, (base, tcp, ip) in nodes.items():
+            status, b = "good", base
+            if "swc01" in name and 15 < hrs_left < 18:         # 3 h outage
+                status = "tcp_error"
+            if "mwp02" in name and 1.2 < hrs_left < 2.5:       # sustained slowness, recent
+                b = base * 4.5
+            ocsp.append(mk(name, "http://%s:8080/ejbca/publicweb/status/ocsp" % name[3:], b, tcp, ip, t, status=status))
+        docs.append({"run_at": t.isoformat(), "run_from": "demo-probe", "verdict": "HEALTHY", "ocsp": ocsp})
+        t += dt.timedelta(minutes=5)
+    return docs
+
+
+def mk(label, url, base, tcp, ip, t, status="good", dns=0.0):
+    import random
+    if status != "good":
+        return {"label": label, "url": url, "status": status, "ms": None, "checked_at": t.isoformat(),
+                "network": {"dns_ms": int(dns), "tcp_ms": None, "addresses": [ip]}, "responder": None}
+    tcp_j = max(1, int(random.gauss(tcp, 1.5)))
+    proc = max(20, random.gauss(base, base * 0.12)) + (random.random() < 0.04) * random.uniform(80, 160)
+    return {"label": label, "url": url, "status": "good", "ms": int(proc + 2 * tcp_j), "checked_at": t.isoformat(),
+            "network": {"dns_ms": int(dns), "tcp_ms": tcp_j, "addresses": [ip]}, "responder": "demo"}
+
+
+# -------------------------------------------------------------- analytics
+def baselines(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-node median of proc_ms, ms, tcp_ms over the baseline window (good samples only)."""
+    cut = df["t"].max() - pd.Timedelta(hours=BASELINE_HOURS)
+    g = df[(df["t"] >= cut) & (df["status"] == "good")].groupby("node")
+    return g.agg(proc_med=("proc_ms", "median"), ms_med=("ms", "median"),
+                 tcp_med=("tcp_ms", "median"), dns_med=("dns_ms", "median"), n=("ms", "size"))
+
+
+def smooth(s: pd.Series) -> pd.Series:
+    return s.rolling(SMOOTH_SAMPLES, min_periods=1, center=True).median()
+
+
+def classify_row(r, b):
+    """Return (level, reason) for one sample against its node's baseline."""
+    if r["status"] != "good":
+        return "alert", "status %s" % r["status"]
+    if b is None or pd.isna(b.get("proc_med")):
+        return "ok", ""
+    if r["proc_ms"] is not None:
+        if r["proc_ms"] > ALERT_ABS_PROC_MS or r["proc_ms"] > ALERT_X * b["proc_med"]:
+            return "alert", "VA time %d ms vs baseline %d" % (r["proc_ms"], b["proc_med"])
+        if r["proc_ms"] > WARN_X * b["proc_med"]:
+            return "warn", "VA time %d ms vs baseline %d" % (r["proc_ms"], b["proc_med"])
+    if r["ms"] is not None and r["ms"] > ALERT_ABS_MS:
+        return "alert", "end-to-end %d ms" % r["ms"]
+    if r["tcp_ms"] is not None and not pd.isna(b.get("tcp_med")) and r["tcp_ms"] > max(100, WARN_X * b["tcp_med"]):
+        return "warn", "TCP connect %d ms vs baseline %d" % (r["tcp_ms"], b["tcp_med"])
+    if r["node"] == LB_LABEL and r["dns_ms"] is not None and not pd.isna(b.get("dns_med")):
+        if r["dns_ms"] > DNS_ALERT_MS:
+            return "alert", "DNS %d ms" % r["dns_ms"]
+        if r["dns_ms"] > DNS_WARN_X * b["dns_med"]:
+            return "warn", "DNS %d ms vs baseline %d" % (r["dns_ms"], b["dns_med"])
+    return "ok", ""
+
+
+def classify(df: pd.DataFrame, base: pd.DataFrame) -> pd.DataFrame:
+    """Add level/reason per row, then require CONSECUTIVE breaches for a confirmed alert."""
+    lv, rs = [], []
+    for _, r in df.iterrows():
+        b = base.loc[r["node"]].to_dict() if r["node"] in base.index else None
+        l, why = classify_row(r, b)
+        lv.append(l); rs.append(why)
+    df = df.assign(level=lv, reason=rs)
+    rank = {"ok": 0, "warn": 1, "alert": 2}
+    df["lvl_n"] = df["level"].map(rank)
+    # confirmed = this and the previous CONSECUTIVE-1 samples for the same node are all non-ok
+    df["confirmed"] = (df.groupby("node")["lvl_n"]
+                         .transform(lambda s: (s > 0).rolling(CONSECUTIVE, min_periods=CONSECUTIVE).sum() >= CONSECUTIVE)
+                         .fillna(False).astype(bool))
+    return df
+
+
+def exceptions(df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse consecutive confirmed breaches into one row per episode."""
+    ex = df[df["confirmed"]].copy()
+    if ex.empty:
+        return pd.DataFrame(columns=["start", "end", "node", "worst", "samples", "reason"])
+    out = []
+    for node, g in ex.groupby("node"):
+        g = g.sort_values("t")
+        gap = g["t"].diff() > pd.Timedelta(minutes=12)   # > 2 missed samples = new episode
+        for _, ep in g.groupby(gap.cumsum()):
+            worst = ep.sort_values("lvl_n", ascending=False).iloc[0]
+            out.append({"start": ep["t"].min(), "end": ep["t"].max(), "node": node,
+                        "worst": worst["level"], "samples": len(ep), "reason": worst["reason"]})
+    return pd.DataFrame(out).sort_values("start", ascending=False)
+
+
+# ---------------------------------------------------------------- widgets
+def tile(col, node, latest, b):
+    """One status tile."""
+    short = node.replace("VA ", "").split(".")[0]
+    if latest is None:
+        col.markdown(tile_html(short, "no data", "", GREY)); return
+    level = latest["level"]
+    color = {"ok": GREEN, "warn": AMBER, "alert": RED}[level]
+    if latest["status"] != "good":
+        big, small = latest["status"].upper(), "since last good sample"
+    elif node == LB_LABEL:
+        big = "%d ms" % latest["ms"]
+        small = "DNS %d ms → %s" % (latest["dns_ms"] or 0, latest["ip"] or "?")
+    else:
+        big = "%d ms" % latest["proc_ms"]
+        delta = ""
+        if b is not None and not pd.isna(b.get("proc_med")) and b["proc_med"]:
+            pct = 100.0 * (latest["proc_ms"] - b["proc_med"]) / b["proc_med"]
+            delta = "%+.0f%% vs 24 h median %d ms" % (pct, b["proc_med"])
+        small = delta or "no baseline yet"
+    if latest["confirmed"] and level != "ok":
+        small = "⚠ " + (latest["reason"] or small)
+    col.markdown(tile_html(short, big, small, color), unsafe_allow_html=True)
+
+
+def tile_html(title, big, small, color):
+    return """
+    <div style="border-left:6px solid {c};background:rgba(140,149,159,.08);border-radius:8px;padding:10px 12px;min-height:92px">
+      <div style="font-size:12px;color:#57606a;font-weight:600;letter-spacing:.02em">{t}</div>
+      <div style="font-size:26px;font-weight:700;color:{c};line-height:1.2;margin:2px 0">{b}</div>
+      <div style="font-size:11.5px;color:#57606a">{s}</div>
+    </div>""".format(c=color, t=title, b=big, s=small)
+
+
+COLOR = {}
+
+
+def color_of(node):
+    if node not in COLOR:
+        COLOR[node] = GREY if node == LB_LABEL else PALETTE[len([k for k in COLOR if k != LB_LABEL]) % len(PALETTE)]
+    return COLOR[node]
+
+
+def processing_chart(df, base, nodes, events):
+    fig = go.Figure()
+    for i, node in enumerate(nodes):
+        g = df[(df["node"] == node) & (df["status"] == "good")]
+        if g.empty:
+            continue
+        color = color_of(node)
+        name = node.replace("VA ", "").split(".")[0]
+        if node in base.index and not pd.isna(base.loc[node, "proc_med"]):
+            med = base.loc[node, "proc_med"]
+            fig.add_trace(go.Scatter(x=pd.concat([g["t"], g["t"][::-1]]),
+                                     y=[med * WARN_X] * len(g) + [max(0, med * 0.5)] * len(g),
+                                     fill="toself", fillcolor=hex_a(color, 0.07), line=dict(width=0),
+                                     hoverinfo="skip", showlegend=False, name=name + " band"))
+            fig.add_hline(y=med, line=dict(color=color, width=1, dash="dot"), opacity=0.5)
+        fig.add_trace(go.Scatter(x=g["t"], y=g["proc_ms"], mode="markers", name=name + " raw",
+                                 marker=dict(size=4, color=hex_a(color, 0.25)), showlegend=False,
+                                 hovertemplate="%{x|%H:%M}  raw %{y:.0f} ms<extra>" + name + "</extra>"))
+        fig.add_trace(go.Scatter(x=g["t"], y=smooth(g["proc_ms"]), mode="lines", name=name,
+                                 line=dict(color=color, width=2.2),
+                                 hovertemplate="%{x|%H:%M}  %{y:.0f} ms (15-min median)<extra>" + name + "</extra>"))
+    add_events(fig, events)
+    fig.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10), hovermode="x unified",
+                      yaxis_title="VA processing ms  (= ms − 2×tcp)", xaxis_title=None,
+                      legend=dict(orientation="h", y=1.08, x=0), template="plotly_white")
+    return fig
+
+
+def status_chart(df, nodes, events):
+    fig = go.Figure()
+    sym = {"good": "circle", "warn": "circle", "alert": "x"}
+    for i, node in enumerate(nodes):
+        g = df[df["node"] == node]
+        name = node.replace("VA ", "").split(".")[0]
+        colors = [GREEN if (r.level == "ok") else AMBER if r.level == "warn" else RED for r in g.itertuples()]
+        fig.add_trace(go.Scatter(x=g["t"], y=[name] * len(g), mode="markers", name=name, showlegend=False,
+                                 marker=dict(size=7, color=colors, symbol=[("x" if s != "good" else "circle") for s in g["status"]]),
+                                 text=g["status"] + "  " + g["reason"],
+                                 hovertemplate="%{x|%H:%M}  %{text}<extra>" + name + "</extra>"))
+    add_events(fig, events)
+    fig.update_layout(height=60 + 34 * len(nodes), margin=dict(l=10, r=10, t=10, b=10),
+                      template="plotly_white", xaxis_title=None, yaxis=dict(autorange="reversed"))
+    return fig
+
+
+def lb_chart(df, base):
+    g = df[df["node"] == LB_LABEL].copy()
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.55, 0.45], vertical_spacing=0.08,
+                        subplot_titles=("DNS resolution time for ngocsp (ms)", "Which VA the name resolved to"))
+    fig.add_trace(go.Scatter(x=g["t"], y=g["dns_ms"], mode="lines+markers", name="DNS ms",
+                             line=dict(color=PALETTE[0], width=1.8), marker=dict(size=4)), row=1, col=1)
+    if LB_LABEL in base.index and not pd.isna(base.loc[LB_LABEL, "dns_med"]):
+        fig.add_hline(y=base.loc[LB_LABEL, "dns_med"], line=dict(color=GREY, dash="dot"), row=1, col=1)
+    ips = sorted(g["ip"].dropna().unique(), key=lambda ip: tuple(int(x) for x in ip.split(".")) if ip.replace(".", "").isdigit() else (999,))
+    fig.add_trace(go.Scatter(x=g["t"], y=g["ip"], mode="markers", name="resolved IP", showlegend=False,
+                             marker=dict(size=6, color=[GREEN if s == "good" else RED for s in g["status"]])), row=2, col=1)
+    fig.update_yaxes(categoryorder="array", categoryarray=ips, row=2, col=1)
+    fig.update_layout(height=420, margin=dict(l=10, r=10, t=30, b=10), template="plotly_white", showlegend=False)
+    return fig
+
+
+def small_multiples(df, nodes, col, title):
+    fig = go.Figure()
+    for i, node in enumerate(nodes):
+        g = df[(df["node"] == node) & df[col].notna()]
+        name = node.replace("VA ", "").split(".")[0]
+        fig.add_trace(go.Scatter(x=g["t"], y=g[col], mode="lines", name=name, line=dict(color=color_of(node), width=1.5)))
+    fig.update_layout(height=260, margin=dict(l=10, r=10, t=30, b=10), template="plotly_white",
+                      title=dict(text=title, font=dict(size=13)), legend=dict(orientation="h", y=1.15, x=0))
+    return fig
+
+
+def find_events(df):
+    """Status transitions per node + a step change in DNS → vertical markers."""
+    ev = []
+    for node, g in df.groupby("node"):
+        g = g.sort_values("t")
+        prev = None
+        for r in g.itertuples():
+            cur = "up" if r.status == "good" else "down"
+            if prev is not None and cur != prev:
+                ev.append((r.t, "%s %s" % (node.replace("VA ", "").split(".")[0], cur), RED if cur == "down" else GREEN))
+            prev = cur
+    lb = df[(df["node"] == LB_LABEL) & df["dns_ms"].notna()].sort_values("t")
+    if len(lb) > 12:
+        s = lb["dns_ms"].rolling(6, min_periods=6).median()
+        step = (s - s.shift(6)).abs() > 0.35 * s.shift(6)
+        for t in lb.loc[step.fillna(False), "t"].iloc[:3]:
+            ev.append((t, "DNS step", AMBER))
+    return ev
+
+
+def add_events(fig, events):
+    for t, label, color in events:
+        fig.add_vline(x=t, line=dict(color=color, width=1, dash="dash"), opacity=0.6)
+        fig.add_annotation(x=t, y=1, yref="paper", text=label, showarrow=False, font=dict(size=10, color=color),
+                           textangle=-90, xanchor="left", yanchor="top")
+
+
+def hex_a(h, a):
+    h = h.lstrip("#")
+    return "rgba(%d,%d,%d,%.2f)" % (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), a)
+
+
+# ------------------------------------------------------------------- page
+st.set_page_config(page_title="OCSP health", layout="wide", page_icon="🔏")
+st.markdown("<style>div.block-container{padding-top:1.2rem}</style>", unsafe_allow_html=True)
+
+hdr_l, hdr_r = st.columns([3, 2])
+hdr_l.markdown("## OCSP responder health")
+with hdr_r:
+    c1, c2, c3 = st.columns([1.2, 1.4, 1])
+    hours = c1.selectbox("Window", [6, 12, 24, 48, 72], index=2, format_func=lambda h: "last %d h" % h)
+    df_all = load_docs(max(hours, BASELINE_HOURS))
+    probes = sorted(df_all["probe"].unique()) if not df_all.empty else []
+    probe = c2.selectbox("Probe", probes or ["-"], index=0)
+    if c3.button("Refresh"):
+        load_docs.clear(); st.rerun()
+
+if df_all.empty:
+    st.warning("No ocspcheck documents found in %s.%s for the last %d h." % (MONGO_DB, MONGO_COLL, hours))
+    st.stop()
+
+df_all = df_all[df_all["probe"] == probe]
+base = baselines(df_all)                                      # baseline over the full 24 h
+df = classify(df_all, base)
+df = df[df["t"] >= df["t"].max() - pd.Timedelta(hours=hours)]   # then narrow to the view window
+nodes = [LB_LABEL] + sorted(n for n in df["node"].unique() if n != LB_LABEL)
+va_nodes = [n for n in nodes if n != LB_LABEL]
+for _n in va_nodes + [LB_LABEL]:
+    color_of(_n)
+events = find_events(df)
+last_run = df["run_at"].max()
+age = (pd.Timestamp.now(tz="UTC") - last_run).total_seconds() / 60
+
+# ---- 1. tiles
+st.caption("Last run %s UTC (%d min ago) from %s · baseline = each node's own %d h median · "
+           "alert = > %.0f× or > %d ms, %d samples in a row" %
+           (last_run.strftime("%Y-%m-%d %H:%M"), age, probe, BASELINE_HOURS, ALERT_X, ALERT_ABS_PROC_MS, CONSECUTIVE))
+if age > 12:
+    st.error("Probe is stale: no run for %d minutes. Check the cron on %s." % (age, probe))
+cols = st.columns(len(nodes))
+for col, node in zip(cols, nodes):
+    g = df[df["node"] == node]
+    latest = g.iloc[-1] if not g.empty else None
+    b = base.loc[node].to_dict() if node in base.index else None
+    tile(col, node, latest, b)
+
+# ---- 2. exceptions
+ex = exceptions(df)
+st.markdown("#### Exceptions in the last %d h" % hours)
+if ex.empty:
+    st.success("None. Every responder stayed within its baseline for the whole window.")
+else:
+    show = ex.copy()
+    show["start"] = show["start"].dt.strftime("%m-%d %H:%M")
+    show["end"] = show["end"].dt.strftime("%H:%M")
+    show["node"] = show["node"].str.replace("VA ", "").str.split(".").str[0]
+    show["duration"] = ((ex["end"] - ex["start"]).dt.total_seconds() / 60 + 5).astype(int).astype(str) + " min"
+    st.dataframe(show[["start", "end", "duration", "node", "worst", "reason"]], width='stretch', hide_index=True)
+
+# ---- 3. processing chart
+st.markdown("#### VA processing time (what the responder itself took)")
+st.plotly_chart(processing_chart(df, base, va_nodes, events), width='stretch', config={"displayModeBar": False})
+st.caption("Line = 15-min rolling median; faint dots = raw samples; dotted = 24 h median; band = 0.5× to 2× median. "
+           "A line leaving its band is the signal. Ohio vs SWC differ by distance, so compare each node to its own band only.")
+
+# ---- 4. status timeline
+st.markdown("#### Status")
+st.plotly_chart(status_chart(df, nodes, events), width='stretch', config={"displayModeBar": False})
+
+# ---- 5. details
+with st.expander("Details: load balancer, raw latency, TCP, run log", expanded=False):
+    st.plotly_chart(lb_chart(df, base), width='stretch', config={"displayModeBar": False})
+    st.caption("ngocsp.citi.com is a WLB DNS name, not a server: every lookup hands out one of the four VA IPs. "
+               "A red dot = the name resolved to a node that was failing at that moment (health-check gap).")
+    a, b_ = st.columns(2)
+    a.plotly_chart(small_multiples(df, nodes, "ms", "Raw end-to-end OCSP ms (includes network)"), width='stretch', config={"displayModeBar": False})
+    b_.plotly_chart(small_multiples(df, va_nodes, "tcp_ms", "TCP connect ms (network only)"), width='stretch', config={"displayModeBar": False})
+    st.markdown("**Baselines (24 h medians, good samples only)**")
+    bt = base.copy()
+    bt.index = bt.index.str.replace("VA ", "").str.split(".").str[0]
+    st.dataframe(bt.round(0).rename(columns={"proc_med": "VA ms", "ms_med": "end-to-end ms", "tcp_med": "TCP ms", "dns_med": "DNS ms", "n": "samples"}),
+                 width='stretch')
+    st.markdown("**Latest run, every responder**")
+    lat = df[df["run_at"] == last_run][["node", "status", "ms", "proc_ms", "tcp_ms", "dns_ms", "ip", "level", "reason"]]
+    st.dataframe(lat, width='stretch', hide_index=True)
